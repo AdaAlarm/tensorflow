@@ -458,6 +458,12 @@ class AudioProcessor(object):
             dct_coefficient_count=model_settings['fingerprint_width'])
         tf.compat.v1.summary.image(
             'mfcc', tf.expand_dims(self.output_, -1), max_outputs=1)
+      elif model_settings['preprocess'] == 'raw':
+        int16_input = tf.cast(tf.multiply(background_clamp, 32768), tf.int16)
+        self.output_ = int16_input
+        tf.compat.v1.summary.image('raw',
+                                   self.output_,
+                                   max_outputs=1)
       elif model_settings['preprocess'] == 'micro':
         if not frontend_op:
           raise Exception(
