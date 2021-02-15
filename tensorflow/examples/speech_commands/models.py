@@ -349,7 +349,7 @@ def create_ada_model(fingerprint_input, model_settings, is_training):
         k,
         padding=padding,
         use_bias=False,
-        kernel_regularizer=tf.keras.regularizers.L1(0.00001))(
+        kernel_regularizer=tf.keras.regularizers.l2(0.00001))(
             x)
     x = tf.keras.layers.BatchNormalization()(x)
     x = tf.nn.relu(x)
@@ -362,7 +362,7 @@ def create_ada_model(fingerprint_input, model_settings, is_training):
         k,
         padding=padding,
         dilation_rate=dilation_rate,
-        kernel_regularizer=tf.keras.regularizers.L1(0.00001),
+        kernel_regularizer=tf.keras.regularizers.l2(0.00001),
         use_bias=False)(x)
     x = tf.keras.layers.BatchNormalization()(x)
     x = tf.nn.relu(x)
