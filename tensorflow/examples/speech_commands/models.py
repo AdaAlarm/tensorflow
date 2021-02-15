@@ -384,9 +384,9 @@ def create_ada_model(fingerprint_input, model_settings, is_training):
   x = _context_conv(x, 256, 3)
 
   if is_training:
-    dropout = tf.nn.dropout(x, rate=dropout_rate)
+    second_dropout = tf.nn.dropout(x, rate=dropout_rate)
   else:
-    dropout = x
+    second_dropout = x
 
   second_dropout_shape = second_dropout.get_shape()
   second_dropout_output_width = second_dropout_shape[2]
