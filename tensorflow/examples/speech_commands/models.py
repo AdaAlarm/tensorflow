@@ -368,7 +368,10 @@ def create_ada_model(fingerprint_input, model_settings, is_training):
     x = tf.nn.relu(x)
     return x
 
-  x = _context_conv(fingerprint_input, 32, 1)
+  x = fingerprint_input
+  x = tf.keras.layers.Reshape([800, 20])(x)
+
+  x = _context_conv(x, 32, 1)
   x = _reduce_conv(x, 48, 3)
   x = _context_conv(x, 48, 3)
   x = _reduce_conv(x, 96, 3)
@@ -383,39 +386,17 @@ def create_ada_model(fingerprint_input, model_settings, is_training):
   x = _context_conv(x, 256, 3)
 
   if is_training:
-    second_dropout = tf.nn.dropout(x, rate=dropout_rate)
+    dropout = tf.nn.dropout(x, rate=dropout_rate)
   else:
-    second_dropout = x
+    dropout = x
 
-  second_dropout_shape = second_dropout.get_shape()
-  second_dropout_output_width = second_dropout_shape[2]
-  second_dropout_output_height = second_dropout_shape[1]
-  second_dropout_element_count = int(second_dropout_output_width *
-                                     second_dropout_output_height *
-                                     second_filter_count)
-  flattened_second_dropout = tf.reshape(second_dropout,
-                                        [-1, second_dropout_element_count])
-  label_count = model_settings['label_count']
-  final_fc_weights = tf.compat.v1.get_variable(
-      name='final_fc_weights',
-      initializer=tf.compat.v1.truncated_normal_initializer(stddev=0.01),
-      shape=[second_dropout_element_count, label_count])
-  final_fc_bias = tf.compat.v1.get_variable(
-      name='final_fc_bias',
-      initializer=tf.compat.v1.zeros_initializer,
-      shape=[label_count])
-  final_fc = (
-      tf.matmul(flattened_second_dropout, final_fc_weights) + final_fc_bias)
-  if is_training:
-    return final_fc, dropout_rate
-  else:
-    return final_fc
-
+  x = tf.keras.layers.Conv1D(label_count, 5, activation='softmax')(x)
+  x = tf.keras.layers.Reshape([-1])(x)
 
   if is_training:
-    return logits, dropout_rate
+    return x, dropout_rate
   else:
-    return logits
+    return x
 
 
 
