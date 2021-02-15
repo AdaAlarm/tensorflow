@@ -462,7 +462,7 @@ class AudioProcessor(object):
         self.output_ = tf.cast(background_clamp, tf.float32)
         tf.compat.v1.summary.image(
             'raw',
-            tf.expand_dims(self.output_, 1),
+            tf.expand_dims(tf.expand_dims(self.output_, -1), 0),
             max_outputs=1)
       elif model_settings['preprocess'] == 'micro':
         if not frontend_op:
