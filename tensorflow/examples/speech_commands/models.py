@@ -363,13 +363,12 @@ def create_ada_model(fingerprint_input, model_settings, is_training):
         padding=padding,
         dilation_rate=dilation_rate,
         kernel_regularizer=l2(0.00001),
-        use_bias=False)(
-            x)
+        use_bias=False)(x)
     x = tf.keras.layers.BatchNormalization()(x)
     x = tf.nn.relu(x)
     return x
 
-  x = _context_conv(x, 32, 1)
+  x = _context_conv(fingerprint_input, 32, 1)
   x = _reduce_conv(x, 48, 3)
   x = _context_conv(x, 48, 3)
   x = _reduce_conv(x, 96, 3)
