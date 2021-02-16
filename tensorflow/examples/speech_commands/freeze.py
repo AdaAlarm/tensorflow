@@ -141,6 +141,8 @@ def create_inference_graph(wanted_words, sample_rate, clip_duration_ms,
         out_scale=1,
         out_type=tf.float32)
     fingerprint_input = tf.multiply(micro_frontend, (10.0 / 256.0))
+  elif preprocess == 'raw':
+    fingerprint_input = decoded_sample_data.audio
   else:
     raise Exception('Unknown preprocess mode "%s" (should be "mfcc",'
                     ' "average", or "micro")' % (preprocess))

@@ -343,7 +343,7 @@ def create_ada_model(fingerprint_input, model_settings, is_training):
   fingerprint_size = model_settings['fingerprint_size']
   label_count = model_settings['label_count']
 
-  def _reduce_conv(x, num_filters, k, strides=2, padding='VALID'):
+  def _reduce_conv(x, num_filters, k, strides=2, padding='valid'):
     x = tf.keras.layers.Conv1D(
         num_filters,
         k,
@@ -354,6 +354,8 @@ def create_ada_model(fingerprint_input, model_settings, is_training):
     x = tf.keras.layers.BatchNormalization()(x)
     x = tf.nn.relu(x)
     x = tf.keras.layers.MaxPool1D(pool_size=3, strides=strides, padding=padding)(x)
+    if is_training:
+      x = tf.nn.dropout(x, rate=0.5)
     return x
   
   def _context_conv(x, num_filters, k, dilation_rate=1, padding='valid'):
@@ -372,18 +374,22 @@ def create_ada_model(fingerprint_input, model_settings, is_training):
   x = tf.keras.layers.Reshape([800, 20])(x)
 
   x = _context_conv(x, 32, 1)
-  x = _reduce_conv(x, 48, 3)
-  x = _context_conv(x, 48, 3)
-  x = _reduce_conv(x, 96, 3)
-  x = _context_conv(x, 96, 3)
-  x = _reduce_conv(x, 128, 3)
-  x = _context_conv(x, 128, 3)
-  x = _reduce_conv(x, 160, 3)
-  x = _context_conv(x, 160, 3)
-  x = _reduce_conv(x, 192, 3)
-  x = _context_conv(x, 192, 3)
-  x = _reduce_conv(x, 256, 3)
-  x = _context_conv(x, 256, 3)
+  # x = _reduce_conv(x, 48, 3)
+  # x = _context_conv(x, 48, 3)
+  # x = _reduce_conv(x, 96, 3)
+  # x = _context_conv(x, 96, 3)
+  # x = _reduce_conv(x, 128, 3)
+  # x = _context_conv(x, 128, 3)
+  # x = _reduce_conv(x, 160, 3)
+  # x = _context_conv(x, 160, 3)
+  # x = _reduce_conv(x, 192, 3)
+  # x = _context_conv(x, 192, 3)
+  # x = _reduce_conv(x, 256, 3)
+  # x = _context_conv(x, 256, 3)
+
+  for _ in range(4):
+    x = _reduce_conv(x, 32, 3)
+    x = _context_conv(x, 32, 3)
 
   if is_training:
     dropout = tf.nn.dropout(x, rate=dropout_rate)
