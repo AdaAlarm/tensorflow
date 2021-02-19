@@ -358,7 +358,7 @@ def create_ada_model(fingerprint_input, model_settings, is_training):
     x = tf.nn.relu(x)
     x = tf.keras.layers.MaxPool1D(pool_size=pool_size, strides=strides, padding=padding)(x)
     if is_training:
-      x = tf.nn.dropout(x, rate=0.5)
+      x = tf.nn.dropout(x, rate=dropout_rate)
     return x
   
   def _context_conv(x, num_filters, k, dilation_rate=1, padding='valid'):
