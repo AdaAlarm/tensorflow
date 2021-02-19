@@ -153,6 +153,10 @@ case "${TENSORFLOW_TARGET}" in
     ${PYTHON} setup_with_binary.py bdist --plat-name=linux_armv6l \
                        bdist_wheel --plat-name=linux-armv6l
     ;;
+  rpiz)
+    ${PYTHON} setup_with_binary.py bdist --plat-name=linux_armv6l \
+                       bdist_wheel --plat-name=linux-armv6l
+    ;;
   aarch64)
     ${PYTHON} setup_with_binary.py bdist --plat-name=linux-aarch64 \
                        bdist_wheel --plat-name=linux-aarch64
@@ -200,6 +204,9 @@ case "${TENSORFLOW_TARGET}" in
     ;;
   rpi0)
     dpkg-buildpackage -b -rfakeroot -us -uc -tc -d -a armel
+    ;;
+  rpiz)
+    dpkg-buildpackage -b -rfakeroot -us -uc -tc -d -a armhf
     ;;
   aarch64)
     dpkg-buildpackage -b -rfakeroot -us -uc -tc -d -a arm64
