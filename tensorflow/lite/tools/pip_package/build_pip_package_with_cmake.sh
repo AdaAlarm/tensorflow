@@ -87,7 +87,7 @@ case "${TENSORFLOW_TARGET}" in
     ;;
   rpiz)
     BUILD_FLAGS=${BUILD_FLAGS:-"-I${PYTHON_INCLUDE} -I${PYBIND11_INCLUDE}"}
-    cmake -lpthread \
+    cmake \
       -DCMAKE_C_FLAGS="${BUILD_FLAGS}" \
       -DCMAKE_CXX_FLAGS="${BUILD_FLAGS}" \
       -DCMAKE_SYSTEM_NAME=Linux \
