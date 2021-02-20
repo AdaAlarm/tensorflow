@@ -87,9 +87,12 @@ case "${TENSORFLOW_TARGET}" in
     ;;
   rpiz)
     BUILD_FLAGS=${BUILD_FLAGS:-"-I${PYTHON_INCLUDE} -I${PYBIND11_INCLUDE}"}
+    ARMCC_FLAGS="${ARMCC_FLAGS} -march=armv6 -mfpu=vfp -funsafe-math-optimizations"
     cmake \
       -DCMAKE_C_FLAGS="${BUILD_FLAGS}" \
       -DCMAKE_CXX_FLAGS="${BUILD_FLAGS}" \
+      -DCMAKE_C_FLAGS="${ARMCC_FLAGS}" \
+      -DCMAKE_CXX_FLAGS="${ARMCC_FLAGS}" \
       -DCMAKE_SYSTEM_NAME=Linux \
       -DCMAKE_SYSTEM_PROCESSOR=armv6 \
       -DTFLITE_ENABLE_XNNPACK=OFF \
