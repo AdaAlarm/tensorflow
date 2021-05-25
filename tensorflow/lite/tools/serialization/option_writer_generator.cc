@@ -83,6 +83,10 @@ static const char* param_structs[] = {"TfLiteAddParams",
                                       "TfLiteCumsumParams",
                                       "TfLiteCallOnceParams",
                                       "TfLiteConv3DParams",
+                                      "TfLiteHashtableParams",
+                                      "TfLiteHashtableFindParams",
+                                      "TfLiteHashtableImportParams",
+                                      "TfLiteHashtableSizeParams",
                                       nullptr};
 }  // namespace
 
@@ -155,6 +159,7 @@ class OpOptionData {
     op_to_option_["REDUCE_MAX"] = "ReducerOptions";
     op_to_option_["REDUCE_MIN"] = "ReducerOptions";
     op_to_option_["REDUCE_ANY"] = "ReducerOptions";
+    op_to_option_["REDUCE_ALL"] = "ReducerOptions";
     op_to_option_["SUM"] = "ReducerOptions";
     op_to_option_["REDUCE_MAX"] = "ReducerOptions";
     op_to_option_["REDUCE_PROD"] = "ReducerOptions";

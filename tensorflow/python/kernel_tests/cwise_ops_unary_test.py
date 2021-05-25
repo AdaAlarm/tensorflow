@@ -383,11 +383,14 @@ class UnaryOpTest(test.TestCase):
 
   @test_util.run_deprecated_v1
   def testBFloat16Basic(self):
+
     def compute_f32(np_func):
       """Decorator to compute Numpy function with float32 math."""
+
       def f(x):
         y = np_func(x.astype(np.float32))
         return y.astype(x.dtype)
+
       return f
 
     bfloat16 = dtypes_lib.bfloat16.as_numpy_dtype
@@ -418,6 +421,7 @@ class UnaryOpTest(test.TestCase):
     self._compareCpu(x, np.abs, _ABS)
     self._compareBoth(x, np.negative, math_ops.negative)
     self._compareBoth(x, np.negative, _NEG)
+    self._compareBoth(x, np.sign, math_ops.sign)
 
   def testInt16Basic(self):
     x = np.arange(-6, 6, 2).reshape(1, 3, 2).astype(np.int16)
@@ -425,6 +429,7 @@ class UnaryOpTest(test.TestCase):
     self._compareCpu(x, np.abs, _ABS)
     self._compareBoth(x, np.negative, math_ops.negative)
     self._compareBoth(x, np.negative, _NEG)
+    self._compareBoth(x, np.sign, math_ops.sign)
 
   def testInt32Basic(self):
     x = np.arange(-6, 6, 2).reshape(1, 3, 2).astype(np.int32)
@@ -466,7 +471,7 @@ class UnaryOpTest(test.TestCase):
     self._compareBoth(x, np.abs, _ABS)
     self._compareBoth(x, np.negative, math_ops.negative)
     self._compareBoth(x, np.negative, _NEG)
-    self._compareCpu(y, self._inv, math_ops.reciprocal)
+    self._compareBoth(y, self._inv, math_ops.reciprocal)
     self._compareCpu(x, np.square, math_ops.square)
     self._compareCpu(y, np.sqrt, math_ops.sqrt)
     self._compareCpu(y, self._rsqrt, math_ops.rsqrt)
@@ -511,7 +516,7 @@ class UnaryOpTest(test.TestCase):
     self._compareBoth(x, np.abs, _ABS)
     self._compareBoth(x, np.negative, math_ops.negative)
     self._compareBoth(x, np.negative, _NEG)
-    self._compareCpu(y, self._inv, math_ops.reciprocal)
+    self._compareBoth(y, self._inv, math_ops.reciprocal)
     self._compareCpu(x, np.square, math_ops.square)
     self._compareCpu(y, np.sqrt, math_ops.sqrt)
     self._compareCpu(y, self._rsqrt, math_ops.rsqrt)

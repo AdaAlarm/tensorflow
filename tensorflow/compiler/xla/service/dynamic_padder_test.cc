@@ -128,7 +128,7 @@ TEST_F(DynamicPadderTest, ReduceTest) {
 
   auto reduce = builder.AddInstruction(HloInstruction::CreateReduce(
       reduce_shape, negate, init, {0, 2}, GetScalarAddComputation()));
-
+  EXPECT_FALSE(module_->is_dynamic());
   module_->AddEntryComputation(builder.Build());
 
   // Set up dynamic parameter binding.
@@ -139,6 +139,7 @@ TEST_F(DynamicPadderTest, ReduceTest) {
   TF_ASSERT_OK(RunPadder().status());
 
   ExpectPadded(reduce->operand(0));
+  EXPECT_TRUE(module_->is_dynamic());
 }
 
 TEST_F(DynamicPadderTest, DynamicLoweringTest) {
@@ -368,6 +369,48 @@ TEST_F(DynamicPadderTest, ReduceWindowNoPadForTrivialWindow) {
   EXPECT_THAT(output->operand(0), op::Parameter());
 }
 
+TEST_F(DynamicPadderTest, VariadicReduceWindowNoPadForTrivialWindow) {
+  const string hlo_text = R"(
+HloModule VariadicReduceWindowNoPadForTrivialWindow
+
+add_f32 (a: f32[], b: s32[], c: f32[], d: s32[]) -> (f32[], s32[]) {
+  a = f32[] parameter(0)
+  b = s32[] parameter(1)
+  c = f32[] parameter(2)
+  d = s32[] parameter(3)
+  add.0 = f32[] add(a, c)
+  add.1 = s32[] add(b, d)
+  ROOT out = tuple(add.0, add.1)
+}
+
+ENTRY main {
+  input.0 = f32[4, 5] parameter(0)
+  input.1 = s32[4, 5] parameter(1)
+  size_param.0 = s32[] parameter(2)
+  size_param.1 = s32[] parameter(3)
+  init.0 = f32[] constant(0.0)
+  init.1 = s32[] constant(0)
+  ROOT output = (f32[3, 5], s32[3, 5]) reduce-window(input.0, input.1, init.0, init.1), window={size=2x1 pad=0_0x0_0}, to_apply=add_f32
+}
+)";
+
+  const int kNumParams = 2;
+  module_ = ParseAndReturnVerifiedModule(hlo_text).ValueOrDie();
+  // Set up dynamic parameter binding.
+  for (int i = 0; i < kNumParams; ++i) {
+    TF_CHECK_OK(module_->dynamic_parameter_binding().Bind(
+        DynamicParameterBinding::DynamicParameter{2, {}},
+        DynamicParameterBinding::DynamicDimension{i, {}, 1}));
+  }
+
+  TF_ASSERT_OK(RunPadder().status());
+
+  for (int i = 0; i < kNumParams; ++i) {
+    EXPECT_THAT(module_->entry_computation()->root_instruction()->operand(i),
+                op::Parameter());
+  }
+}
+
 // Test that dynamic padder has the same result as if not padded.
 class ExecutionTest : public HloTestBase {
  protected:
@@ -455,6 +498,47 @@ ENTRY main {
       {&operand, &scatter_indices_padded, &updates_padded, &dynamic_size});
 
   EXPECT_EQ(padded, not_padded);
+}
+
+XLA_TEST_F(ExecutionTest, ScatterUpdateWindowDim) {
+  const string hlo_text = R"(
+HloModule ScatterUpdateWindowDim
+
+update_s32 (lhs: s32[], rhs: s32[]) -> s32[] {
+  lhs = s32[] parameter(0)
+  ROOT rhs = s32[] parameter(1)
+}
+
+ENTRY main {
+  operand = s32[1,2,3] parameter(0)
+  indices = s32[1] parameter(1)
+  updates = s32[2,3,1] parameter(2)
+  dynamic_size = s32[] constant(1)
+  operand_dynamic = s32[1, <=2, 3] set-dimension-size(operand, dynamic_size),
+      dimensions={1}
+  updates_dynamic = s32[<=2, 3, 1] set-dimension-size(updates, dynamic_size),
+      dimensions={0}
+  ROOT scatter = s32[1, <=2, 3] scatter(operand_dynamic, indices, updates_dynamic),
+      to_apply=update_s32,
+      update_window_dims={0, 1},
+      inserted_window_dims={0},
+      scatter_dims_to_operand_dims={0},
+      index_vector_dim=1
+
+}
+)";
+  auto hlo_module = GetHloModule(hlo_text);
+
+  Literal operand = LiteralUtil::CreateR3<int32>({{{0, 0, 0}, {0, 0, 0}}});
+  Literal scatter_indices = LiteralUtil::CreateR1<int32>({0});
+  Literal updates =
+      LiteralUtil::CreateR3<int32>({{{10}, {20}, {30}}, {{70}, {80}, {90}}});
+
+  Literal padded = PadAndExecute(std::move(hlo_module),
+                                 {&operand, &scatter_indices, &updates}, false);
+  Literal expected =
+      LiteralUtil::CreateR3<int32>({{{10, 20, 30}, {70, 80, 90}}});
+  EXPECT_EQ(padded, expected);
 }
 
 XLA_TEST_F(ExecutionTest, ScatterUpdateF32) {

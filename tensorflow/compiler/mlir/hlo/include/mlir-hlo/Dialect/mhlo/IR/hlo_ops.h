@@ -28,6 +28,7 @@ limitations under the License.
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -78,7 +79,7 @@ class TokenType : public Type::TypeBase<TokenType, Type, TypeStorage> {
 //
 // and returns %4 as the shape value.
 LogicalResult deriveShapeFromFirstOperand(
-    OpBuilder *builder, Operation *op,
+    OpBuilder *builder, Operation *op, ValueRange operands,
     SmallVectorImpl<Value> *reifiedReturnShapes);
 
 // Type derivation function that returns a tensor type with a new element type.

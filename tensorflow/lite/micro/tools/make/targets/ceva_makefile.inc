@@ -17,10 +17,9 @@ LD = ceva-elf-ld
 
 PLATFORM_ARGS += \
 $(TARGET_ARCH_DEFINES) \
-	c \
 	-fmessage-length=0 \
 	-fpermissive \
-	-Os \
+	-O4 \
 	-g3 \
 	-Wall \
 	-pedantic \
@@ -82,6 +81,7 @@ CCFLAGS += $(PLATFORM_ARGS)
 MICROLITE_CC_HDRS += \
   tensorflow/lite/micro/kernels/ceva/ceva_tflm_lib.h \
   tensorflow/lite/micro/kernels/ceva/types.h \
+  tensorflow/lite/micro/kernels/ceva/ceva_common.h 
   
 
 MICROLITE_CC_SRCS += \

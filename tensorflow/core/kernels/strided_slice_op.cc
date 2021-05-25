@@ -119,7 +119,7 @@ class StridedSliceOp : public OpKernel {
     }
 
     // Optimization #2, slice is memory contiguous (only occurs in dim 0)
-    if (slice_dim0 && IsDim0SliceAligned<T>(input.shape(), begin[0], end[0])) {
+    if (slice_dim0 && IsDim0SliceAligned<T>(input.shape(), begin[0])) {
       OP_REQUIRES(context, input.dims() >= 1,
                   errors::InvalidArgument(
                       "Input must have rank at least 1, got: ", input.dims()));
@@ -475,8 +475,10 @@ TF_CALL_ALL_TYPES(REGISTER_STRIDED_SLICE);
                               .HostMemory("strides"),                   \
                           StridedSliceAssignOp<GPUDevice, type, true>)
 
+TF_CALL_uint8(REGISTER_GPU);
 TF_CALL_int8(REGISTER_GPU);
 TF_CALL_int64(REGISTER_GPU);
+TF_CALL_uint32(REGISTER_GPU);
 TF_CALL_GPU_ALL_TYPES(REGISTER_GPU);
 
 // A special GPU kernel for int32.

@@ -56,8 +56,10 @@ add_mlir_library(MhloPasses
   materialize_broadcasts.cc
   materialize_broadcasts_pass.cc
   mhlo_fusion.cc
+  move_up_dynamic_broadcasts_for_fusion.cc
   optimize_mhlo.cc
   optimize_mhlo_pass.cc
+  rank_specialization.cc
   sink_constants_to_control_flow.cc
   test_infer_shaped_type_pass.cc
   transform_unranked_hlo.cc

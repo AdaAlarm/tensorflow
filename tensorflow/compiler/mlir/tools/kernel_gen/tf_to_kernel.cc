@@ -34,7 +34,8 @@
 #include "llvm/Target/TargetMachine.h"
 #include "mlir/ExecutionEngine/OptUtils.h"  // from @llvm-project
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
-#include "mlir/Target/LLVMIR.h"  // from @llvm-project
+#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"  // from @llvm-project
+#include "mlir/Target/LLVMIR/Export.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/init_mlir.h"
 #include "tensorflow/compiler/mlir/tools/kernel_gen/kernel_creator.h"
 #include "tensorflow/compiler/xla/util.h"
@@ -172,6 +173,7 @@ int main(int argc, char** argv) {
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
   mlir::registerPassManagerCLOptions();
+  mlir::registerMLIRContextCLOptions();
   llvm::cl::ParseCommandLineOptions(argc, argv, "TF op kernel generator\n");
 
   auto status = tensorflow::kernel_gen::Run(

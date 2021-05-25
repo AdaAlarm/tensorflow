@@ -26,14 +26,14 @@ namespace testing {
 namespace {
 
 constexpr int kBasicInputOutputSize = 16;
-const int basic_input_dims[] = {4, 4, 2, 2, 1};
+int basic_input_dims[] = {4, 4, 2, 2, 1};
 const float basic_input[kBasicInputOutputSize] = {
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-const int basic_block_shape_dims[] = {1, 2};
+int basic_block_shape_dims[] = {1, 2};
 const int32_t basic_block_shape[] = {2, 2};
-const int basic_crops_dims[] = {1, 4};
+int basic_crops_dims[] = {1, 4};
 const int32_t basic_crops[] = {0, 0, 0, 0};
-const int basic_output_dims[] = {4, 1, 4, 4, 1};
+int basic_output_dims[] = {4, 1, 4, 4, 1};
 const float basic_golden[kBasicInputOutputSize] = {1, 5, 2, 6, 9,  13, 10, 14,
                                                    3, 7, 4, 8, 11, 15, 12, 16};
 
@@ -64,10 +64,10 @@ TfLiteStatus ValidateBatchToSpaceNdGoldens(TfLiteTensor* tensors,
 }
 
 TfLiteStatus TestBatchToSpaceNdFloat(
-    const int* input_dims_data, const float* input_data,
-    const int* block_shape_dims_data, const int32_t* block_shape_data,
-    const int* crops_dims_data, const int32_t* crops_data,
-    const int* output_dims_data, const float* golden, float* output_data) {
+    int* input_dims_data, const float* input_data, int* block_shape_dims_data,
+    const int32_t* block_shape_data, int* crops_dims_data,
+    const int32_t* crops_data, int* output_dims_data, const float* golden,
+    float* output_data) {
   TfLiteIntArray* input_dims = IntArrayFromInts(input_dims_data);
   TfLiteIntArray* block_shape_dims = IntArrayFromInts(block_shape_dims_data);
   TfLiteIntArray* crops_dims = IntArrayFromInts(crops_dims_data);
@@ -89,10 +89,10 @@ TfLiteStatus TestBatchToSpaceNdFloat(
 
 template <typename T>
 TfLiteStatus TestBatchToSpaceNdQuantized(
-    const int* input_dims_data, const float* input_data, T* input_quantized,
-    float input_scale, int input_zero_point, const int* block_shape_dims_data,
-    const int32_t* block_shape_data, const int* crops_dims_data,
-    const int32_t* crops_data, const int* output_dims_data, const float* golden,
+    int* input_dims_data, const float* input_data, T* input_quantized,
+    float input_scale, int input_zero_point, int* block_shape_dims_data,
+    const int32_t* block_shape_data, int* crops_dims_data,
+    const int32_t* crops_data, int* output_dims_data, const float* golden,
     T* golden_quantized, float output_scale, int output_zero_point,
     T* output_data) {
   TfLiteIntArray* input_dims = IntArrayFromInts(input_dims_data);
@@ -149,20 +149,6 @@ TF_LITE_MICRO_TEST(BatchToSpaceBasicInt8) {
           tflite::testing::basic_block_shape, tflite::testing::basic_crops_dims,
           tflite::testing::basic_crops, tflite::testing::basic_output_dims,
           tflite::testing::basic_golden, golden_quantized, 1.0f, 0, output));
-}
-
-TF_LITE_MICRO_TEST(BatchToSpaceInvalidOutputDimensionShouldFail) {
-  constexpr int output_length = 12;
-  const int output_dims[] = {4, 1, 4, 3, 1};
-  float output[output_length];
-  TF_LITE_MICRO_EXPECT_EQ(
-      kTfLiteError,
-      tflite::testing::TestBatchToSpaceNdFloat(
-          tflite::testing::basic_input_dims, tflite::testing::basic_input,
-          tflite::testing::basic_block_shape_dims,
-          tflite::testing::basic_block_shape, tflite::testing::basic_crops_dims,
-          tflite::testing::basic_crops, output_dims,
-          tflite::testing::basic_golden, output));
 }
 
 TF_LITE_MICRO_TESTS_END

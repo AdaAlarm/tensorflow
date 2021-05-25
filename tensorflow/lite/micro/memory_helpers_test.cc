@@ -137,6 +137,10 @@ TF_LITE_MICRO_TEST(TestTypeSizeOf) {
   TF_LITE_MICRO_EXPECT_EQ(sizeof(int32_t), size);
 
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk,
+                          tflite::TfLiteTypeSizeOf(kTfLiteUInt32, &size));
+  TF_LITE_MICRO_EXPECT_EQ(sizeof(uint32_t), size);
+
+  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk,
                           tflite::TfLiteTypeSizeOf(kTfLiteUInt8, &size));
   TF_LITE_MICRO_EXPECT_EQ(sizeof(uint8_t), size);
 
@@ -190,8 +194,8 @@ TF_LITE_MICRO_TEST(TestBytesRequiredForTensor) {
 
 TF_LITE_MICRO_TEST(TestAllocateOutputDimensionsFromInput) {
   constexpr int kDimsLen = 4;
-  const int input1_dims[] = {1, 1};
-  const int input2_dims[] = {kDimsLen, 5, 5, 5, 5};
+  int input1_dims[] = {1, 1};
+  int input2_dims[] = {kDimsLen, 5, 5, 5, 5};
   int output_dims[] = {0, 0, 0, 0, 0};
   TfLiteTensor input_tensor1 = tflite::testing::CreateTensor<int32_t>(
       nullptr, tflite::testing::IntArrayFromInts(input1_dims));

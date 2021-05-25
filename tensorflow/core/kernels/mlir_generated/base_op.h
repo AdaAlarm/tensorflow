@@ -102,16 +102,8 @@ class MlirOp : public OpKernel {
   explicit MlirOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
 
   void Compute(OpKernelContext* ctx) override {
-    llvm::SmallVector<::UnrankedMemRefType<InputDataType>, 2> input_descs;
-    for (int i = 0, end = ctx->num_inputs(); i < end; ++i) {
-      input_descs.push_back(
-          std::move(ConvertTensorToDescriptor<InputDataType>(ctx->input(i))));
-    }
     VLOG(4) << ctx->op_kernel().TraceString(*ctx, true);
-    auto result_desc = Kernel::Invoke(ctx, input_descs);
-    for (const auto& input_desc : input_descs) {
-      free(input_desc.descriptor);
-    }
+    auto result_desc = Kernel::Invoke(ctx);
     if (!ctx->status().ok()) {
       free(result_desc.descriptor);
       return;
@@ -143,117 +135,152 @@ class MlirOp : public OpKernel {
   }
 };
 
-#define MLIR_FUNCTION(tf_op, platform, mlir_type, mlir_output_type) \
-  _mlir_ciface_##tf_op##_##platform##_##mlir_type##_##mlir_output_type
+#define MLIR_FUNCTION(tf_op, platform, input_type, output_type) \
+  _mlir_ciface_##tf_op##_##platform##_##input_type##_##output_type
 
-#define MLIR_OP(tf_op, platform, mlir_type, mlir_output_type) \
-  Mlir##tf_op##platform##mlir_type##mlir_output_type##Op
+#define MLIR_OP(tf_op, platform, input_type, output_type) \
+  Mlir##tf_op##platform##input_type##output_type##Op
 
-#define REGISTER_ALIASED_KERNEL(tf_op, mlir_op, platform, mlir_type,         \
-                                mlir_output_type, data_type)                 \
-  REGISTER_KERNEL_BUILDER(                                                   \
-      Name(#tf_op).Device(DEVICE_##platform).TypeConstraint<data_type>("T"), \
-      MLIR_OP(mlir_op, platform, mlir_type, mlir_output_type));
+#define REGISTER_ALIASED_KERNEL(tf_op, mlir_op, platform, input_type,      \
+                                output_type)                               \
+  REGISTER_KERNEL_BUILDER(                                                 \
+      Name(#tf_op)                                                         \
+          .Device(DEVICE_##platform)                                       \
+          .TypeConstraint<typename EnumToDataType<input_type>::Type>("T"), \
+      MLIR_OP(mlir_op, platform, input_type, output_type));
 
-#define REGISTER_KERNEL(tf_op, platform, mlir_type, mlir_output_type,          \
-                        data_type)                                             \
-  REGISTER_ALIASED_KERNEL(tf_op, tf_op, platform, mlir_type, mlir_output_type, \
-                          data_type)
+#define REGISTER_KERNEL(tf_op, platform, input_type, output_type) \
+  REGISTER_ALIASED_KERNEL(tf_op, tf_op, platform, input_type, output_type)
 
-#define REGISTER_COMPLEX_KERNEL(tf_op, platform, mlir_type, mlir_output_type, \
-                                data_type, input_data_type)                   \
-  REGISTER_KERNEL_BUILDER(                                                    \
-      Name(#tf_op)                                                            \
-          .Device(DEVICE_##platform)                                          \
-          .TypeConstraint<input_data_type>("T")                               \
-          .TypeConstraint<data_type>("Tout"),                                 \
-      MLIR_OP(tf_op, platform, mlir_type, mlir_output_type));
+#define REGISTER_COMPLEX_KERNEL(tf_op, platform, input_type, output_type)      \
+  REGISTER_KERNEL_BUILDER(                                                     \
+      Name(#tf_op)                                                             \
+          .Device(DEVICE_##platform)                                           \
+          .TypeConstraint<typename EnumToDataType<input_type>::Type>("T")      \
+          .TypeConstraint<typename EnumToDataType<output_type>::Type>("Tout"), \
+      MLIR_OP(tf_op, platform, input_type, output_type));
 
-#define REGISTER_KERNEL_NO_TYPE_CONSTRAINT(tf_op, platform, mlir_type, \
-                                           mlir_output_type)           \
-  REGISTER_KERNEL_BUILDER(                                             \
-      Name(#tf_op).Device(DEVICE_##platform),                          \
-      MLIR_OP(tf_op, platform, mlir_type, mlir_output_type));
+#define REGISTER_KERNEL_NO_TYPE_CONSTRAINT(tf_op, platform, input_type) \
+  REGISTER_KERNEL_BUILDER(Name(#tf_op).Device(DEVICE_##platform),       \
+                          MLIR_OP(tf_op, platform, input_type, input_type));
 
 // OpKernel with Compute function that converts input tensors to unranked
 // memref descriptors and calls mlir-generated unranked kernel. The outputs
 // are converted back to tensors using MlirTensorBuffer to take ownership of
 // pre-allocated memory.
-#define GENERATE_AND_REGISTER_BINARY_KERNEL(tf_op, platform, mlir_type, \
-                                            data_type)                  \
-  GENERATE_BINARY_KERNEL(tf_op, platform, mlir_type, data_type)         \
-  REGISTER_KERNEL(tf_op, platform, mlir_type, mlir_type, data_type)
+#define GENERATE_AND_REGISTER_BINARY_KERNEL(tf_op, platform, input_type) \
+  GENERATE_BINARY_KERNEL(tf_op, platform, input_type)                    \
+  REGISTER_KERNEL(tf_op, platform, input_type, input_type)
 
-#define GENERATE_AND_REGISTER_BINARY_KERNEL2(                           \
-    tf_op, platform, mlir_type, mlir_output_type, result_data_type,     \
-    input_data_type)                                                    \
-  GENERATE_BINARY_KERNEL2(tf_op, platform, mlir_type, mlir_output_type, \
-                          result_data_type, input_data_type)            \
-  REGISTER_KERNEL(tf_op, platform, mlir_type, mlir_output_type, input_data_type)
+#define GENERATE_AND_REGISTER_BINARY_KERNEL2(tf_op, platform, input_type, \
+                                             output_type)                 \
+  GENERATE_BINARY_KERNEL2(tf_op, platform, input_type, output_type)       \
+  REGISTER_KERNEL(tf_op, platform, input_type, output_type)
 
-#define GENERATE_BINARY_KERNEL(tf_op, platform, mlir_type, data_type)       \
-  GENERATE_BINARY_KERNEL2(tf_op, platform, mlir_type, mlir_type, data_type, \
-                          data_type)
+#define GENERATE_BINARY_KERNEL(tf_op, platform, input_type) \
+  GENERATE_BINARY_KERNEL2(tf_op, platform, input_type, input_type)
 
-#define GENERATE_BINARY_KERNEL2(tf_op, platform, mlir_type, mlir_output_type, \
-                                result_data_type, input_data_type)            \
-  extern "C" UntypedUnrankedMemRefType MLIR_FUNCTION(                         \
-      tf_op, platform, mlir_type, mlir_output_type)(                          \
-      tensorflow::OpKernelContext * ctx,                                      \
-      const ::UnrankedMemRefType<input_data_type>* arg1,                      \
-      const ::UnrankedMemRefType<input_data_type>* arg2);                     \
-                                                                              \
-  namespace {                                                                 \
-  class MLIR_OP(tf_op, platform, mlir_type, mlir_output_type)                 \
-      : public MlirOp<DataTypeToEnum<result_data_type>::value,                \
-                      result_data_type,                                       \
-                      MLIR_OP(tf_op, platform, mlir_type, mlir_output_type),  \
-                      input_data_type> {                                      \
-   public:                                                                    \
-    using MlirOp::MlirOp;                                                     \
-                                                                              \
-    static ::UnrankedMemRefType<result_data_type> Invoke(                     \
-        OpKernelContext* ctx,                                                 \
-        llvm::ArrayRef<::UnrankedMemRefType<input_data_type>> args) {         \
-      return ConvertToTyped<result_data_type>(                                \
-          MLIR_FUNCTION(tf_op, platform, mlir_type, mlir_output_type)(        \
-              ctx, &args[0], &args[1]));                                      \
-    }                                                                         \
-  };                                                                          \
+#define GENERATE_BINARY_KERNEL2(tf_op, platform, input_type, output_type)      \
+  extern "C" void MLIR_FUNCTION(tf_op, platform, input_type, output_type)(     \
+      UntypedUnrankedMemRefType * result, tensorflow::OpKernelContext * ctx,   \
+      const ::UnrankedMemRefType<typename EnumToDataType<input_type>::Type>*   \
+          arg1,                                                                \
+      const ::UnrankedMemRefType<typename EnumToDataType<input_type>::Type>*   \
+          arg2);                                                               \
+                                                                               \
+  namespace {                                                                  \
+  class MLIR_OP(tf_op, platform, input_type, output_type)                      \
+      : public MlirOp<output_type, typename EnumToDataType<output_type>::Type, \
+                      MLIR_OP(tf_op, platform, input_type, output_type),       \
+                      typename EnumToDataType<input_type>::Type> {             \
+   public:                                                                     \
+    using MlirOp::MlirOp;                                                      \
+    using InputDataType = EnumToDataType<input_type>::Type;                    \
+    using ResultDataType = EnumToDataType<output_type>::Type;                  \
+                                                                               \
+    static ::UnrankedMemRefType<ResultDataType> Invoke(OpKernelContext* ctx) { \
+      auto arg0 = ConvertTensorToDescriptor<InputDataType>(ctx->input(0));     \
+      auto arg1 = ConvertTensorToDescriptor<InputDataType>(ctx->input(1));     \
+      UntypedUnrankedMemRefType result;                                        \
+      MLIR_FUNCTION(tf_op, platform, input_type, output_type)                  \
+      (&result, ctx, &arg0, &arg1);                                            \
+      free(arg0.descriptor);                                                   \
+      free(arg1.descriptor);                                                   \
+      return ConvertToTyped<ResultDataType>(result);                           \
+    }                                                                          \
+  };                                                                           \
   }
 
-#define GENERATE_AND_REGISTER_UNARY_KERNEL(tf_op, platform, mlir_type, \
-                                           data_type)                  \
-  GENERATE_UNARY_KERNEL(tf_op, platform, mlir_type, data_type)         \
-  REGISTER_KERNEL(tf_op, platform, mlir_type, mlir_type, data_type)
+#define GENERATE_AND_REGISTER_SELECT_KERNEL(tf_op, platform, input_type) \
+  GENERATE_SELECT_KERNEL(tf_op, platform, input_type)                    \
+  REGISTER_KERNEL(tf_op, platform, input_type, input_type)
 
-#define GENERATE_UNARY_KERNEL(tf_op, platform, mlir_type, data_type)       \
-  GENERATE_UNARY_KERNEL2(tf_op, platform, mlir_type, mlir_type, data_type, \
-                         data_type)
+#define GENERATE_SELECT_KERNEL(tf_op, platform, input_type)                    \
+  extern "C" void MLIR_FUNCTION(tf_op, platform, input_type, input_type)(      \
+      UntypedUnrankedMemRefType * result, tensorflow::OpKernelContext * ctx,   \
+      const ::UnrankedMemRefType<bool>* arg1,                                  \
+      const ::UnrankedMemRefType<typename EnumToDataType<input_type>::Type>*   \
+          arg2,                                                                \
+      const ::UnrankedMemRefType<typename EnumToDataType<input_type>::Type>*   \
+          arg3);                                                               \
+                                                                               \
+  namespace {                                                                  \
+  class MLIR_OP(tf_op, platform, input_type, input_type)                       \
+      : public MlirOp<input_type, typename EnumToDataType<input_type>::Type,   \
+                      MLIR_OP(tf_op, platform, input_type, input_type),        \
+                      typename EnumToDataType<input_type>::Type> {             \
+   public:                                                                     \
+    using MlirOp::MlirOp;                                                      \
+    using InputDataType = EnumToDataType<input_type>::Type;                    \
+    using ResultDataType = EnumToDataType<input_type>::Type;                   \
+                                                                               \
+    static ::UnrankedMemRefType<ResultDataType> Invoke(OpKernelContext* ctx) { \
+      auto arg0 = ConvertTensorToDescriptor<bool>(ctx->input(0));              \
+      auto arg1 = ConvertTensorToDescriptor<InputDataType>(ctx->input(1));     \
+      auto arg2 = ConvertTensorToDescriptor<InputDataType>(ctx->input(2));     \
+      UntypedUnrankedMemRefType result;                                        \
+      MLIR_FUNCTION(tf_op, platform, input_type, input_type)                   \
+      (&result, ctx, &arg0, &arg1, &arg2);                                     \
+      free(arg0.descriptor);                                                   \
+      free(arg1.descriptor);                                                   \
+      free(arg2.descriptor);                                                   \
+      return ConvertToTyped<ResultDataType>(result);                           \
+    }                                                                          \
+  };                                                                           \
+  }
 
-#define GENERATE_UNARY_KERNEL2(tf_op, platform, mlir_type, mlir_output_type, \
-                               result_data_type, input_data_type)            \
-  extern "C" UntypedUnrankedMemRefType MLIR_FUNCTION(                        \
-      tf_op, platform, mlir_type, mlir_output_type)(                         \
-      tensorflow::OpKernelContext * ctx,                                     \
-      const ::UnrankedMemRefType<input_data_type>* arg);                     \
-                                                                             \
-  namespace {                                                                \
-  class MLIR_OP(tf_op, platform, mlir_type, mlir_output_type)                \
-      : public MlirOp<DataTypeToEnum<result_data_type>::value,               \
-                      result_data_type,                                      \
-                      MLIR_OP(tf_op, platform, mlir_type, mlir_output_type), \
-                      input_data_type> {                                     \
-   public:                                                                   \
-    using MlirOp::MlirOp;                                                    \
-                                                                             \
-    static ::UnrankedMemRefType<result_data_type> Invoke(                    \
-        OpKernelContext* ctx,                                                \
-        llvm::ArrayRef<::UnrankedMemRefType<input_data_type>> args) {        \
-      return ConvertToTyped<result_data_type>(MLIR_FUNCTION(                 \
-          tf_op, platform, mlir_type, mlir_output_type)(ctx, &args[0]));     \
-    }                                                                        \
-  };                                                                         \
+#define GENERATE_AND_REGISTER_UNARY_KERNEL(tf_op, platform, input_type) \
+  GENERATE_UNARY_KERNEL(tf_op, platform, input_type)                    \
+  REGISTER_KERNEL(tf_op, platform, input_type, input_type)
+
+#define GENERATE_UNARY_KERNEL(tf_op, platform, input_type) \
+  GENERATE_UNARY_KERNEL2(tf_op, platform, input_type, input_type)
+
+#define GENERATE_UNARY_KERNEL2(tf_op, platform, input_type, output_type)       \
+  extern "C" void MLIR_FUNCTION(tf_op, platform, input_type, output_type)(     \
+      UntypedUnrankedMemRefType * result, tensorflow::OpKernelContext * ctx,   \
+      const ::UnrankedMemRefType<typename EnumToDataType<input_type>::Type>*   \
+          arg);                                                                \
+                                                                               \
+  namespace {                                                                  \
+  class MLIR_OP(tf_op, platform, input_type, output_type)                      \
+      : public MlirOp<output_type, typename EnumToDataType<output_type>::Type, \
+                      MLIR_OP(tf_op, platform, input_type, output_type),       \
+                      typename EnumToDataType<input_type>::Type> {             \
+   public:                                                                     \
+    using MlirOp::MlirOp;                                                      \
+    using InputDataType = EnumToDataType<input_type>::Type;                    \
+    using ResultDataType = EnumToDataType<output_type>::Type;                  \
+                                                                               \
+    static ::UnrankedMemRefType<ResultDataType> Invoke(OpKernelContext* ctx) { \
+      auto arg0 = ConvertTensorToDescriptor<InputDataType>(ctx->input(0));     \
+      UntypedUnrankedMemRefType result;                                        \
+      MLIR_FUNCTION(tf_op, platform, input_type, output_type)                  \
+      (&result, ctx, &arg0);                                                   \
+      free(arg0.descriptor);                                                   \
+      return ConvertToTyped<ResultDataType>(result);                           \
+    }                                                                          \
+  };                                                                           \
   }
 
 }  // namespace tensorflow

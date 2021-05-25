@@ -872,7 +872,8 @@ Status IrEmitter::HandleConvolution(HloInstruction* convolution) {
   auto rhs = convolution->operand(1);
   TF_RETURN_IF_ERROR(ElementTypesSameAndSupported(
       /*instruction=*/*convolution, /*operands=*/{lhs, rhs},
-      /*supported_types=*/{F16, F32, F64, C64, C128}));
+      /*supported_types=*/
+      {PRED, S8, U8, S16, U16, S32, U32, S64, U64, F16, F32, F64, C64, C128}));
 
   // TODO(tonywy): Add PotentiallyImplementedAsMKLConvolution to support
   // different data layouts.
@@ -1441,12 +1442,13 @@ IrEmitter::ReductionGenerator IrEmitter::MatchReductionGenerator(
       };
 
     case HloOpcode::kMaximum:
-      return [root_is_floating_point, root_is_signed](
+      return [root_is_floating_point, root_is_signed, this](
                  llvm::IRBuilder<>* b, llvm::Value* lhs,
                  llvm::Value* rhs) -> llvm::Value* {
         if (root_is_floating_point) {
-          return llvm_ir::EmitCallToIntrinsic(llvm::Intrinsic::maxnum,
-                                              {lhs, rhs}, {lhs->getType()}, b);
+          return llvm_ir::EmitFloatMax(
+              lhs, rhs, b,
+              hlo_module_config_.debug_options().xla_cpu_enable_fast_min_max());
         }
 
         return b->CreateSelect(
@@ -1457,12 +1459,13 @@ IrEmitter::ReductionGenerator IrEmitter::MatchReductionGenerator(
       };
 
     case HloOpcode::kMinimum:
-      return [root_is_floating_point, root_is_signed](
+      return [root_is_floating_point, root_is_signed, this](
                  llvm::IRBuilder<>* b, llvm::Value* lhs,
                  llvm::Value* rhs) -> llvm::Value* {
         if (root_is_floating_point) {
-          return llvm_ir::EmitCallToIntrinsic(llvm::Intrinsic::minnum,
-                                              {lhs, rhs}, {lhs->getType()}, b);
+          return llvm_ir::EmitFloatMin(
+              lhs, rhs, b,
+              hlo_module_config_.debug_options().xla_cpu_enable_fast_min_max());
         }
 
         return b->CreateSelect(
@@ -1532,7 +1535,7 @@ IrEmitter::EmitInnerLoopForVectorizedReduction(
     const llvm_ir::IrArray::Index& output_index,
     const ShardedVectorType& accumulator_type, HloInstruction* init_value,
     HloInstruction* arg, absl::Span<const int64> dimensions,
-    unsigned element_alignment) {
+    llvm::Align element_alignment) {
   ShardedVector accumulator;
   accumulator.reserve(accumulator_type.size());
   for (auto accumulator_shard_type : accumulator_type) {
@@ -1608,7 +1611,7 @@ IrEmitter::EmitInnerLoopForVectorizedReduction(
 
 void IrEmitter::EmitShardedVectorStore(
     llvm::Value* store_address, const std::vector<llvm::Value*>& value_to_store,
-    const int alignment, const llvm_ir::IrArray& containing_array) {
+    llvm::Align alignment, const llvm_ir::IrArray& containing_array) {
   for (int i = 0; i < value_to_store.size(); i++) {
     auto store_address_typed =
         BitCast(store_address,
@@ -1666,9 +1669,9 @@ StatusOr<bool> IrEmitter::EmitVectorizedReduce(
   bool is_reduction_over_minor_dimension = absl::c_linear_search(
       dimensions, LayoutUtil::Minor(arg->shape().layout(), 0));
 
-  unsigned element_alignment = tensorflow::MathUtil::GCD<unsigned>(
+  llvm::Align element_alignment(tensorflow::MathUtil::GCD<unsigned>(
       ShapeUtil::ByteSizeOfPrimitiveType(reduce->shape().element_type()),
-      MinimumAlignmentForPrimitiveType(reduce->shape().element_type()));
+      MinimumAlignmentForPrimitiveType(reduce->shape().element_type())));
 
   if (is_reduction_over_minor_dimension) {
     // TODO(sanjoy): Implement vectorized reduction over the minor dimension.
@@ -2551,6 +2554,20 @@ llvm::Value* IrEmitter::EmitPrintf(absl::string_view fmt,
       call_args);
 }
 
+llvm::Value* IrEmitter::EmitPrintfToStderr(
+    absl::string_view fmt, absl::Span<llvm::Value* const> arguments) {
+  llvm::Type* ptr_ty = b_.getInt8Ty()->getPointerTo();
+  std::vector<llvm::Value*> call_args;
+  call_args.push_back(b_.CreateGlobalStringPtr(llvm_ir::AsStringRef(fmt)));
+  absl::c_copy(arguments, std::back_inserter(call_args));
+  return b_.CreateCall(
+      b_.GetInsertBlock()->getParent()->getParent()->getOrInsertFunction(
+          runtime::kPrintfToStderrSymbolName,
+          llvm::FunctionType::get(b_.getInt32Ty(), {ptr_ty},
+                                  /*isVarArg=*/true)),
+      call_args);
+}
+
 llvm::Value* IrEmitter::EmitCallToFunc(
     std::string func_name, const std::vector<llvm::Value*>& arguments,
     llvm::Type* return_type, bool does_not_throw, bool only_accesses_arg_memory,
@@ -2583,8 +2600,8 @@ void IrEmitter::EmitTransferElements(llvm::Value* target, llvm::Value* source,
                                      const llvm_ir::IrArray& source_array) {
   unsigned primitive_type_size =
       ShapeUtil::ByteSizeOfPrimitiveType(primitive_type);
-  unsigned element_alignment = tensorflow::MathUtil::GCD<unsigned>(
-      primitive_type_size, MinimumAlignmentForPrimitiveType(primitive_type));
+  llvm::Align element_alignment(tensorflow::MathUtil::GCD<unsigned>(
+      primitive_type_size, MinimumAlignmentForPrimitiveType(primitive_type)));
   llvm::Type* primitive_ptr_type = llvm::PointerType::getUnqual(
       llvm_ir::PrimitiveTypeToIrType(primitive_type, module_));
 

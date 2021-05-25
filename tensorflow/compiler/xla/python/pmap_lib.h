@@ -49,7 +49,10 @@ namespace jax {
 // The 3 following structs define how to shard one dimension of an ndarry.
 //
 // `NoSharding` (`None` in Python) means no sharding.
-struct NoSharding {};
+struct NoSharding {
+  bool operator==(const NoSharding& other) const { return true; }
+  bool operator!=(const NoSharding& other) const { return false; }
+};
 
 // `Chunked` means that the dimension is split into np.prod(chunks) chunks
 // and the split dimension itself is preserved inside the map.
@@ -125,6 +128,12 @@ class ShardingSpec {
     return mesh_mapping_;
   }
 
+  bool operator==(const ShardingSpec& other) const {
+    return sharding_ == other.sharding_ && mesh_mapping_ == other.mesh_mapping_;
+  }
+
+  bool operator!=(const ShardingSpec& other) const { return !(*this == other); }
+
  private:
   //  `sharding` specifies how the array is supposed to get partitioned into
   //  chunks. Its length matchs the rank of the array. See the docstring
@@ -152,7 +161,7 @@ class ShardingSpec {
 
 // Design note: We move to C++, only what will need to be accessed by C++ to
 // execute a pmap computation. A large part of the logic is still in Python.
-class ShardedDeviceArray : xla::DeviceArrayBase {
+class ShardedDeviceArray {
  public:
   ShardedDeviceArray(
       pybind11::handle aval, ShardingSpec sharding_spec,
@@ -161,8 +170,7 @@ class ShardedDeviceArray : xla::DeviceArrayBase {
       // TODO(jblespiau): As soon as PjRtBuffer is supported by all
       // implementations, we should be able to store this with the C++ objects.
       pybind11::list device_buffers)
-      : DeviceArrayBase(),
-        aval_(pybind11::cast<pybind11::object>(aval)),
+      : aval_(pybind11::cast<pybind11::object>(aval)),
         sharding_spec_(std::move(sharding_spec)),
         device_buffers_(device_buffers) {}
 

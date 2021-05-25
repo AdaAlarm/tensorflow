@@ -81,17 +81,15 @@ IrEmitter::IrEmitter(const HloModuleConfig& hlo_module_config,
     : ir_emitter_context_(ir_emitter_context),
       module_(ir_emitter_context->llvm_module()),
       b_(module_->getContext()),
-      bindings_(ir_emitter_context->hlo_module(),
-                &ir_emitter_context->buffer_assignment(), &b_, module_,
-                is_nested),
-      hlo_module_config_(hlo_module_config) {
-}
+      bindings_(&b_, module_, is_nested),
+      hlo_module_config_(hlo_module_config) {}
 
 Status IrEmitter::DefaultAction(HloInstruction* hlo) {
   ElementalIrEmitter::HloToElementGeneratorMap operand_to_generator;
   for (const HloInstruction* operand : hlo->operands()) {
     operand_to_generator[operand] = [=](const llvm_ir::IrArray::Index& index) {
-      return GetIrArray(*operand, *hlo).EmitReadArrayElement(index, &b_);
+      return GetIrArray(*operand, *hlo)
+          .EmitReadArrayElement(index, &b_, operand->name());
     };
   }
   return EmitTargetElementLoop(
@@ -100,8 +98,7 @@ Status IrEmitter::DefaultAction(HloInstruction* hlo) {
                 .MakeElementGenerator(hlo, operand_to_generator));
 }
 
-Status IrEmitter::EmitConstants(const HloComputation& computation,
-                                bool lookup_indices) {
+Status IrEmitter::EmitConstants(const HloComputation& computation) {
   for (HloInstruction* instr : computation.instructions()) {
     if (instr->opcode() != HloOpcode::kConstant) {
       continue;
@@ -127,9 +124,6 @@ Status IrEmitter::EmitConstants(const HloComputation& computation,
     //
     // We may have to be more clever here in the future if we notice that we're
     // keeping around too many globals because of their linkage.
-    unsigned global_address_space = llvm_ir::GetGlobalMemoryAddressSpace(
-        *ir_emitter_context_->llvm_module());
-
     std::string global_name = llvm_ir::ConstantHloToGlobalName(*instr);
 
     llvm::GlobalVariable* global_for_const = new llvm::GlobalVariable(
@@ -137,7 +131,7 @@ Status IrEmitter::EmitConstants(const HloComputation& computation,
         llvm::GlobalValue::ExternalLinkage,
         /*Initializer=*/initializer, global_name,
         /*TLMode=*/llvm::GlobalValue::NotThreadLocal,
-        /*AddressSpace=*/global_address_space,
+        /*AddressSpace=*/0,
         /*isExternallyInitialized=*/false);
     global_for_const->setAlignment(llvm::Align(kConstantBufferAlignBytes));
     ir_emitter_context_->llvm_module()->getGlobalList().push_back(
@@ -149,13 +143,6 @@ Status IrEmitter::EmitConstants(const HloComputation& computation,
     if (!should_emit_initializer) {
       auto base = static_cast<const uint8*>(literal.untyped_data());
       info.content.assign(base, base + literal.size_bytes());
-    }
-    if (lookup_indices) {
-      auto maybe_slice =
-          ir_emitter_context_->buffer_assignment().GetUniqueSlice(instr, {});
-      if (maybe_slice.ok()) {
-        info.allocation_index = maybe_slice.ValueOrDie().index();
-      }
     }
     ir_emitter_context_->constants().push_back(std::move(info));
   }
@@ -298,6 +285,7 @@ bool IrEmitter::MaybeEmitDirectAtomicOperation(
           (f64_atomic_add_supported && element_type == F64);
       if (atomic_add_supported) {
         AtomicRMW(llvm::AtomicRMWInst::FAdd, output_address, source,
+                  llvm::MaybeAlign(),
                   llvm::AtomicOrdering::SequentiallyConsistent);
         return true;
       }
@@ -306,6 +294,7 @@ bool IrEmitter::MaybeEmitDirectAtomicOperation(
     if (is_atomic_integral) {
       // integral + integral
       AtomicRMW(llvm::AtomicRMWInst::Add, output_address, source,
+                llvm::MaybeAlign(),
                 llvm::AtomicOrdering::SequentiallyConsistent);
       return true;
     }
@@ -317,7 +306,7 @@ bool IrEmitter::MaybeEmitDirectAtomicOperation(
     auto opcode = primitive_util::IsSignedIntegralType(element_type)
                       ? llvm::AtomicRMWInst::Max
                       : llvm::AtomicRMWInst::UMax;
-    AtomicRMW(opcode, output_address, source,
+    AtomicRMW(opcode, output_address, source, llvm::MaybeAlign(),
               llvm::AtomicOrdering::SequentiallyConsistent);
     return true;
   }
@@ -327,7 +316,7 @@ bool IrEmitter::MaybeEmitDirectAtomicOperation(
     auto opcode = primitive_util::IsSignedIntegralType(element_type)
                       ? llvm::AtomicRMWInst::Min
                       : llvm::AtomicRMWInst::UMin;
-    AtomicRMW(opcode, output_address, source,
+    AtomicRMW(opcode, output_address, source, llvm::MaybeAlign(),
               llvm::AtomicOrdering::SequentiallyConsistent);
     return true;
   }
@@ -475,10 +464,10 @@ Status IrEmitter::EmitAtomicOperationUsingCAS(const HloComputation& computation,
   // Emit code to perform the atomicCAS operation
   // (cas_old_output, success) = atomicCAS(memory_address, cas_old_output,
   //                                       cas_new_output);
-  llvm::Value* ret_value =
-      AtomicCmpXchg(atomic_memory_address, cas_old_output, cas_new_output,
-                    llvm::AtomicOrdering::SequentiallyConsistent,
-                    llvm::AtomicOrdering::SequentiallyConsistent);
+  llvm::Value* ret_value = AtomicCmpXchg(
+      atomic_memory_address, cas_old_output, cas_new_output, llvm::MaybeAlign(),
+      llvm::AtomicOrdering::SequentiallyConsistent,
+      llvm::AtomicOrdering::SequentiallyConsistent);
 
   // Extract the memory value returned from atomicCAS and store it as
   // cas_old_output.
@@ -688,7 +677,8 @@ void IrEmitter::BindFusionArguments(const HloInstruction* fusion,
     fused_emitter->BindGenerator(
         fusion->fused_parameter(i),
         [this, operand, fusion](llvm_ir::IrArray::Index index) {
-          return GetIrArray(*operand, *fusion).EmitReadArrayElement(index, &b_);
+          return GetIrArray(*operand, *fusion)
+              .EmitReadArrayElement(index, &b_, operand->name());
         });
   }
 }

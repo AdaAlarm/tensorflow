@@ -37,6 +37,7 @@ limitations under the License.
 #include "mlir/IR/Matchers.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/IR/PatternMatch.h"  // from @llvm-project
+#include "mlir/IR/Region.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
@@ -620,7 +621,7 @@ class ConvertReduceOpToTfOp : public OpConversionPattern<mhlo::ReduceOp> {
     // "mhlo::ReduceOp" only has one input, one init_value and one result.
     if (failed(MatchInitValue(reduce_op.init_values()[0]))) return failure();
 
-    auto input = reduce_op.operands()[0];
+    auto input = reduce_op.inputs()[0];
 
     // Get reduction dimension.
     DenseIntElementsAttr dimension = reduce_op.dimensions();
@@ -647,12 +648,11 @@ class ConvertReduceOpToTfOp : public OpConversionPattern<mhlo::ReduceOp> {
   // This function tries to match that the "mhlo::ReduceOp" only has one
   // input, one init_value and one result.
   LogicalResult MatchReduceOpInput(mhlo::ReduceOp reduce_op) const {
-    if (reduce_op.operands().size() != 1 ||
-        reduce_op.init_values().size() != 1 ||
+    if (reduce_op.inputs().size() != 1 || reduce_op.init_values().size() != 1 ||
         reduce_op.getResults().size() != 1)
       return failure();
 
-    if (!reduce_op.operands()[0].getType().isa<RankedTensorType>())
+    if (!reduce_op.inputs()[0].getType().isa<RankedTensorType>())
       return failure();
     if (!reduce_op.getType(0).isa<RankedTensorType>()) return failure();
     return success();
@@ -702,6 +702,184 @@ class ConvertReduceOpToTfMin
         init_attr.getSplatValue<APFloat>().isNegative())
       return failure();
     return success();
+  }
+};
+
+template <typename TfReduce, typename TfArgReduce>
+class ConvertReduceOpToTfArgMinMax
+    : public OpConversionPattern<mhlo::ReduceOp> {
+ public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult matchAndRewrite(
+      mhlo::ReduceOp reduce_op, ArrayRef<Value> args,
+      ConversionPatternRewriter &rewriter) const final {
+    if (reduce_op.inputs().size() != 2) return failure();
+    if (reduce_op.dimensions().getNumElements() != 1) return failure();
+
+    // Check that the input init is the expected value.
+    DenseElementsAttr input_init;
+    if (!matchPattern(reduce_op.init_values().front(), m_Constant(&input_init)))
+      return failure();
+    if (!IsValueInitValue(input_init)) return failure();
+
+    // Check that the iota init is zero.
+    DenseElementsAttr iota_init;
+    if (!matchPattern(reduce_op.init_values().back(), m_Constant(&iota_init)))
+      return failure();
+    if (*iota_init.getIntValues().begin() != 0) return failure();
+
+    // Verify that the second argument is an Iota op along the same dimenion as
+    // the reduction.
+    Value iota = reduce_op.inputs().back();
+    mhlo::BroadcastInDimOp iota_broadcast =
+        llvm::dyn_cast_or_null<mhlo::BroadcastInDimOp>(iota.getDefiningOp());
+    if (!iota_broadcast ||
+        iota_broadcast.broadcast_dimensions() != reduce_op.dimensions())
+      return failure();
+    if (!llvm::isa<mhlo::IotaOp>(iota_broadcast.operand().getDefiningOp()))
+      return failure();
+
+    // Match the reduction computation.
+    if (failed(matchReduceComputation(reduce_op.body()))) return failure();
+
+    Value input = reduce_op.inputs().front();
+    int64_t axis = reduce_op.dimensions().getValue<int64_t>({0});
+
+    auto dim_type = RankedTensorType::get({1}, rewriter.getI64Type());
+    auto reduction_indices = rewriter.create<ConstOp>(
+        reduce_op.getLoc(), dim_type, rewriter.getI64TensorAttr({axis}));
+
+    // Generate a Max and an ArgMax of as the mhlo op returns both while in TF
+    // we have separate ops for them. If only one of them is used then the other
+    // one will be garbage collected later.
+    auto result_type = reduce_op.getType(0).cast<TupleType>();
+    auto tf_reduce_op = rewriter.create<TfReduce>(
+        reduce_op.getLoc(), result_type.getType(0), input, reduction_indices,
+        /*keep_dim=*/rewriter.getBoolAttr(false));
+    auto tf_argreduce_op = rewriter.create<TfArgReduce>(
+        reduce_op.getLoc(), result_type.getType(1), input, reduction_indices);
+
+    // Pack the result into a TupleOp to match return type. The Tuple will be
+    // optimised out by a subsequent pass.
+    SmallVector<Value, 2> result{tf_reduce_op, tf_argreduce_op};
+    rewriter.replaceOpWithNewOp<mhlo::TupleOp>(reduce_op, result);
+    return success();
+  }
+
+  // Pattern matches the following reduction function for ArgMax/ArgMin:
+  // %0 = compare{GT}(%lhs_value, %rhs_value)
+  // %1 = compare{NE}(%lhs_value, %lhs_value)
+  // %2 = or(%0, %1)
+  // %3 = select(%2, %lhs_value, %rhs_value)
+  // %4 = compare{EQ}(%lhs_value, %rhs_value)
+  // %5 = compare{LT}(%lhs_index, %rhs_index)
+  // %6 = and(%4, %5)
+  // %7 = or(%2, %6)
+  // %8 = select(%7, %lhs_index, %rhs_index)
+  // %9 = tuple(%3, %8)
+  // return %9
+  LogicalResult matchReduceComputation(Region &computation) const {
+    Block &body = computation.front();
+    if (body.getNumArguments() != 4) return failure();
+
+    mhlo::ReturnOp return_op = dyn_cast<mhlo::ReturnOp>(body.back());
+    if (!return_op) return failure();
+    if (return_op.getNumOperands() != 1) return failure();
+
+    mhlo::TupleOp return_tuple = llvm::dyn_cast_or_null<mhlo::TupleOp>(
+        return_op.getOperand(0).getDefiningOp());
+    if (!return_tuple ||
+        return_tuple.getType().cast<TupleType>().getTypes().size() != 2)
+      return failure();
+
+    mhlo::SelectOp value_select = llvm::dyn_cast_or_null<mhlo::SelectOp>(
+        return_tuple.getOperand(0).getDefiningOp());
+    if (!value_select || value_select.on_true() != body.getArgument(0) ||
+        value_select.on_false() != body.getArgument(2))
+      return failure();
+
+    mhlo::OrOp value_or = llvm::dyn_cast_or_null<mhlo::OrOp>(
+        value_select.getOperand(0).getDefiningOp());
+    if (!value_or) return failure();
+
+    mhlo::SelectOp index_select = llvm::dyn_cast_or_null<mhlo::SelectOp>(
+        return_tuple.getOperand(1).getDefiningOp());
+    if (!index_select || index_select.on_true() != body.getArgument(1) ||
+        index_select.on_false() != body.getArgument(3))
+      return failure();
+
+    mhlo::CompareOp value_gt =
+        llvm::dyn_cast_or_null<mhlo::CompareOp>(value_or.lhs().getDefiningOp());
+    if (!value_gt || value_gt.comparison_direction() != CompareDirection() ||
+        value_gt.lhs() != body.getArgument(0) ||
+        value_gt.rhs() != body.getArgument(2))
+      return failure();
+
+    mhlo::CompareOp value_ne =
+        llvm::dyn_cast_or_null<mhlo::CompareOp>(value_or.rhs().getDefiningOp());
+    if (!value_ne || value_ne.comparison_direction() != "NE" ||
+        value_ne.lhs() != body.getArgument(0) ||
+        value_ne.rhs() != body.getArgument(0))
+      return failure();
+
+    mhlo::OrOp index_or =
+        llvm::dyn_cast_or_null<mhlo::OrOp>(index_select.pred().getDefiningOp());
+
+    if (!index_or || index_or.lhs() != value_or) return failure();
+
+    mhlo::AndOp index_and =
+        llvm::dyn_cast_or_null<mhlo::AndOp>(index_or.rhs().getDefiningOp());
+    if (!index_and) return failure();
+
+    mhlo::CompareOp value_eq = llvm::dyn_cast_or_null<mhlo::CompareOp>(
+        index_and.lhs().getDefiningOp());
+    if (!value_eq || value_eq.comparison_direction() != "EQ" ||
+        value_eq.lhs() != body.getArgument(0) ||
+        value_eq.rhs() != body.getArgument(2))
+      return failure();
+
+    mhlo::CompareOp index_lt = llvm::dyn_cast_or_null<mhlo::CompareOp>(
+        index_and.rhs().getDefiningOp());
+    if (!index_lt || index_lt.comparison_direction() != "LT" ||
+        index_lt.lhs() != body.getArgument(1) ||
+        index_lt.rhs() != body.getArgument(3))
+      return failure();
+
+    return success();
+  }
+
+  virtual const char *CompareDirection() const = 0;
+
+  virtual bool IsValueInitValue(const DenseElementsAttr &attr) const = 0;
+};
+
+class ConvertReduceOpToTfArgmax
+    : public ConvertReduceOpToTfArgMinMax<TF::MaxOp, TF::ArgMaxOp> {
+ public:
+  using ConvertReduceOpToTfArgMinMax::ConvertReduceOpToTfArgMinMax;
+
+  const char *CompareDirection() const override { return "GT"; }
+  bool IsValueInitValue(const DenseElementsAttr &attr) const override {
+    if (attr.getNumElements() != 1 ||
+        !attr.getType().getElementType().isa<FloatType>())
+      return false;
+    auto value = *attr.getFloatValues().begin();
+    return value.isNegative() && value.isInfinity();
+  }
+};
+
+class ConvertReduceOpToTfArgmin
+    : public ConvertReduceOpToTfArgMinMax<TF::MinOp, TF::ArgMinOp> {
+ public:
+  using ConvertReduceOpToTfArgMinMax::ConvertReduceOpToTfArgMinMax;
+
+  const char *CompareDirection() const override { return "LT"; }
+  bool IsValueInitValue(const DenseElementsAttr &attr) const override {
+    if (attr.getNumElements() != 1 ||
+        !attr.getType().getElementType().isa<FloatType>())
+      return false;
+    auto value = *attr.getFloatValues().begin();
+    return !value.isNegative() && value.isInfinity();
   }
 };
 
@@ -759,7 +937,7 @@ class ConvertIotaOpToTfRange : public OpConversionPattern<mhlo::IotaOp> {
   }
 };
 
-// Maps the following represenattions of AvgPool in MHLO into a tf.AvgPool{3D}
+// Maps the following representations of AvgPool in MHLO into a tf.AvgPool{3D}
 // operation when they cleanly map to 2D or 3D average pool with VALID or SAME
 // padding:
 // * div(reduce_sum_window(x), constant(sizeof(window)))
@@ -773,28 +951,29 @@ class ConvertAvgPoolOp : public OpConversionPattern<mhlo::DivOp> {
       ConversionPatternRewriter &rewriter) const final {
     auto rw =
         dyn_cast_or_null<mhlo::ReduceWindowOp>(div_op.lhs().getDefiningOp());
-    if (!rw) return failure();
+    if (!rw || rw->getNumResults() != 1) return failure();
 
     // Check that the reduce-window is a sum-reduce-window.
     if (failed(MatchBinaryReduceFunction<mhlo::AddOp>(rw.body())))
       return failure();
 
     // Check that this is a floating point reduce window with a rank of 4 or 5.
-    RankedTensorType rw_type = rw.getType().dyn_cast<RankedTensorType>();
+    const RankedTensorType rw_type =
+        rw.getResult(0).getType().dyn_cast<RankedTensorType>();
     if (!rw_type || !rw_type.getElementType().isa<FloatType>() ||
         rw_type.getRank() <= 3 || rw_type.getRank() > 5)
       return failure();
 
     // Check that the Div op doesn't do broadcasting on the output of the reduce
     // window.
-    if (div_op.getType() != rw.getType()) return failure();
+    if (div_op.getType() != rw_type) return failure();
 
     // tf.avg_pool need at least 3 dimensions (batch, spatial, channel)
     const uint64_t rank = rw.window_dimensions().size();
     if (rank <= 2) return failure();
 
     // If the init value isn't zero then it can't be an average pool.
-    if (!isFloatZero(rw.init_value())) return failure();
+    if (!isFloatZero(rw.init_values()[0])) return failure();
 
     llvm::SmallVector<int64_t, 5> window_strides;
     if (rw.window_strides().hasValue()) {
@@ -852,14 +1031,14 @@ class ConvertAvgPoolOp : public OpConversionPattern<mhlo::DivOp> {
         return failure();
 
       return replaceWithAvgPool(
-          div_op, rw.operand(),
+          div_op, rw.inputs()[0],
           llvm::to_vector<4>(rw.window_dimensions().getValues<int64_t>()),
           window_strides, "VALID", rewriter);
     }
 
     auto rw_rhs =
         dyn_cast_or_null<mhlo::ReduceWindowOp>(div_op.rhs().getDefiningOp());
-    if (rw_rhs) {
+    if (rw_rhs && rw_rhs.getNumResults() == 1) {
       // Check that RHS is a sum-reduce-window.
       if (failed(MatchBinaryReduceFunction<mhlo::AddOp>(rw_rhs.body())))
         return failure();
@@ -867,8 +1046,8 @@ class ConvertAvgPoolOp : public OpConversionPattern<mhlo::DivOp> {
       // Check that the RHS is a reduce_window over a constant 1 input with 0 as
       // the init value.
       DenseFPElementsAttr rhs_input;
-      if (!isFloatZero(rw_rhs.init_value()) ||
-          !matchPattern(rw_rhs.operand(), m_Constant(&rhs_input)) ||
+      if (!isFloatZero(rw_rhs.init_values()[0]) ||
+          !matchPattern(rw_rhs.inputs()[0], m_Constant(&rhs_input)) ||
           !rhs_input.isSplat() ||
           !rhs_input.getSplatValue<APFloat>().isExactlyValue(1.0))
         return failure();
@@ -883,13 +1062,14 @@ class ConvertAvgPoolOp : public OpConversionPattern<mhlo::DivOp> {
 
       if (llvm::all_of(padding, [](int64_t i) { return i == 0; }))
         return replaceWithAvgPool(
-            div_op, rw.operand(),
+            div_op, rw.inputs()[0],
             llvm::to_vector<4>(rw.window_dimensions().getValues<int64_t>()),
             window_strides, "VALID", rewriter);
 
       RankedTensorType input_type =
-          rw.operand().getType().dyn_cast<RankedTensorType>();
-      RankedTensorType output_type = rw.getType().dyn_cast<RankedTensorType>();
+          rw.inputs()[0].getType().dyn_cast<RankedTensorType>();
+      RankedTensorType output_type =
+          rw.getResult(0).getType().dyn_cast<RankedTensorType>();
       if (!input_type || !output_type) return failure();
 
       // Check that the individual padding values are corresponding to SAME
@@ -906,7 +1086,7 @@ class ConvertAvgPoolOp : public OpConversionPattern<mhlo::DivOp> {
           return failure();
       }
       return replaceWithAvgPool(
-          div_op, rw.operand(),
+          div_op, rw.inputs()[0],
           llvm::to_vector<4>(rw.window_dimensions().getValues<int64_t>()),
           window_strides, "SAME", rewriter);
     }
@@ -963,6 +1143,30 @@ ConstantOp ShapeToConst(PatternRewriter &rewriter, Value value) {
                                          rewriter.getIntegerType(64));
   auto attr = DenseElementsAttr::get(attr_type, shape);
   return rewriter.create<ConstantOp>(value.getLoc(), attr_type, attr);
+}
+
+bool IsSign(APFloat a, APFloat sign) {
+  if (a.isNaN() || a.isZero()) return a == sign;
+  if (a.isNegative()) return sign.isExactlyValue(-1.0);
+  return sign.isExactlyValue(1.0);
+}
+
+// Returns whether the splat constant is the sign of the FloatTensor
+bool FloatTensorIsSign(PatternRewriter &rewriter, ElementsAttr floatv,
+                       ElementsAttr sgn_cst) {
+  if (!sgn_cst.isa<SplatElementsAttr>()) return false;
+  auto sgn_cst_spl = sgn_cst.cast<SplatElementsAttr>().getSplatValue<APFloat>();
+  if (floatv.isa<SplatElementsAttr>()) {
+    auto floatv_spl = floatv.cast<SplatElementsAttr>().getSplatValue<APFloat>();
+    return IsSign(floatv_spl, sgn_cst_spl);
+  } else if (floatv.isa<DenseElementsAttr>()) {
+    auto floatv_dns = floatv.cast<DenseFPElementsAttr>();
+    return llvm::all_of(floatv_dns.getAttributeValues(), [&](Attribute value) {
+      FloatAttr value_f = value.cast<FloatAttr>();
+      return IsSign(value_f.getValue(), sgn_cst_spl);
+    });
+  }
+  return false;
 }
 
 // If index_vector_dim == indices.rank() then insert the implicit extra
@@ -1033,18 +1237,22 @@ class ConvertGatherOp : public OpConversionPattern<mhlo::GatherOp> {
       return failure();
     }
 
-    // Verify that start_index_map and collapsed_slice_dims are both an iota
-    // with the same number of elements as the last dimension of start_indices.
+    // Verify that start_index_map and collapsed_slice_dims contains the same
+    // values.
     auto start_index_map = gather_op.dimension_numbers().start_index_map();
     auto collapsed_slice_dims =
         gather_op.dimension_numbers().collapsed_slice_dims();
-    if (!IsIotaAttr(start_index_map, start_indices_type.getShape().back()) ||
-        !IsIotaAttr(collapsed_slice_dims,
-                    start_indices_type.getShape().back())) {
-      // TODO(tberghammer): Transform start_indices to support non-standard
-      // start_index_maps.
+    if (start_index_map.getNumElements() !=
+        collapsed_slice_dims.getNumElements()) {
       return rewriter.notifyMatchFailure(
-          gather_op, "unsupported start index map and/or collapsed slice dims");
+          gather_op,
+          "different size for start index map and collapsed slice dims");
+    }
+    for (auto c : collapsed_slice_dims) {
+      if (llvm::count(start_index_map, c) == 0) {
+        return rewriter.notifyMatchFailure(
+            gather_op, "collapsed slice dim isn't present in start index map");
+      }
     }
 
     // Verify that slice_sizes is 1 for the indexed dimensions and the full
@@ -1052,7 +1260,7 @@ class ConvertGatherOp : public OpConversionPattern<mhlo::GatherOp> {
     auto slice_sizes = gather_op.slice_sizes();
     int64_t index = 0;
     for (int64_t s : slice_sizes.getValues<int64_t>()) {
-      if (index < start_indices_type.getShape().back()) {
+      if (llvm::count(start_index_map, index)) {
         if (s != 1) {
           return rewriter.notifyMatchFailure(gather_op,
                                              "unsupported slice sizes");
@@ -1076,6 +1284,25 @@ class ConvertGatherOp : public OpConversionPattern<mhlo::GatherOp> {
       }
       ++offset;
     }
+
+    // Transpose the operand to handle non-iota start index map.
+    llvm::SmallVector<int64_t, 4> transpose_dimensions;
+    llvm::SmallVector<int64_t, 4> transpose_shape;
+    for (auto s : start_index_map) {
+      transpose_dimensions.push_back(s.getZExtValue());
+      transpose_shape.push_back(operand_type.getShape()[s.getZExtValue()]);
+    }
+    for (int64_t i = 0, e = operand_type.getRank(); i < e; ++i) {
+      if (llvm::count(start_index_map, i) == 0) {
+        transpose_dimensions.push_back(i);
+        transpose_shape.push_back(operand_type.getShape()[i]);
+      }
+    }
+    operand_type =
+        RankedTensorType::get(transpose_shape, operand_type.getElementType());
+    operand = rewriter.create<mhlo::TransposeOp>(
+        gather_op.getLoc(), operand_type, operand,
+        rewriter.getI64TensorAttr(transpose_dimensions));
 
     rewriter.replaceOpWithNewOp<TF::GatherNdOp>(gather_op, result_type, operand,
                                                 start_indices);
@@ -1230,12 +1457,13 @@ void LegalizeHloToTf::runOnFunction() {
   MLIRContext &context = getContext();
 
   // Add legalization patterns to the list.
-  OwningRewritePatternList patterns;
+  OwningRewritePatternList patterns(&getContext());
   PopulateLegalizeHloToTfPatterns(&patterns, &context);
 
   ConversionTarget target(context);
   target.addLegalDialect<TensorFlowDialect>();
   target.addLegalOp<CallOp, ConstantOp>();
+  target.addLegalOp<mhlo::TupleOp>();
   if (failed(
           applyPartialConversion(getFunction(), target, std::move(patterns)))) {
     getFunction().emitError("mhlo to TF legalization failed.");
@@ -1250,13 +1478,14 @@ static PassRegistration<LegalizeHloToTf> pass(
 
 void PopulateLegalizeHloToTfPatterns(OwningRewritePatternList *patterns,
                                      MLIRContext *context) {
-  patterns
-      ->insert<ConvertAvgPoolOp, ConvertConvOp, ConvertDynamicSliceOp,
-               ConvertGatherOp, ConvertScatterAddOp, ConvertScatterMaxOp,
-               ConvertScatterMinOp, ConvertScatterSubOp, ConvertScatterUpdateOp,
-               ConvertSliceOp, ConvertReduceOpToTfMax, ConvertReduceOpToTfMin,
-               ConvertReduceOpToTfSum, ConvertIotaOpToTfRange>(context);
-  populateWithGenerated(context, *patterns);
+  patterns->insert<ConvertAvgPoolOp, ConvertConvOp, ConvertDynamicSliceOp,
+                   ConvertGatherOp, ConvertScatterAddOp, ConvertScatterMaxOp,
+                   ConvertScatterMinOp, ConvertScatterSubOp,
+                   ConvertScatterUpdateOp, ConvertSliceOp,
+                   ConvertReduceOpToTfArgmax, ConvertReduceOpToTfArgmin,
+                   ConvertReduceOpToTfMax, ConvertReduceOpToTfMin,
+                   ConvertReduceOpToTfSum, ConvertIotaOpToTfRange>(context);
+  populateWithGenerated(*patterns);
 }
 
 std::unique_ptr<OperationPass<FuncOp>> CreateLegalizeHloToTfPass() {

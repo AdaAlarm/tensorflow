@@ -60,12 +60,20 @@ struct OpsTestConfig {
   // Only used for gpu_unary_ops_test.
   bool expect_buffer_reuse = true;
   bool expect_strictly_equal = false;
+  bool supress_tolerance = false;
   // Negative atol/rtol will make ExpectClose use the default.
   double atol = -1;
   double rtol = -1;
+  std::string input_attribute = "T";
+  std::string output_attribute = "Tout";
   OpsTestConfig ExpectStrictlyEqual() {
     OpsTestConfig config = *this;
     config.expect_strictly_equal = true;
+    return config;
+  }
+  OpsTestConfig SuppressTolerance() {
+    OpsTestConfig config = *this;
+    config.supress_tolerance = true;
     return config;
   }
   OpsTestConfig NoBufferReuse() {
@@ -91,6 +99,16 @@ struct OpsTestConfig {
   OpsTestConfig ATol(double new_atol) {
     OpsTestConfig config = *this;
     config.atol = new_atol;
+    return config;
+  }
+  OpsTestConfig InputAttribute(const std::string& attr) {
+    OpsTestConfig config = *this;
+    config.input_attribute = attr;
+    return config;
+  }
+  OpsTestConfig OutputAttribute(const std::string& attr) {
+    OpsTestConfig config = *this;
+    config.output_attribute = attr;
     return config;
   }
 };
@@ -231,6 +249,17 @@ absl::InlinedVector<T, 10> ComplexInputFromValues(
     complex_input.emplace_back(real[i], imag[i]);
   }
   return complex_input;
+}
+
+template <typename T,
+          std::enable_if_t<llvm::is_one_of<T, std::complex<float>,
+                                           std::complex<double>>::value,
+                           bool> = true>
+absl::InlinedVector<T, 10> DefaultInputNonZero() {
+  auto real = test::DefaultInputNonZero<typename T::value_type>();
+  auto imag = real;
+  std::reverse(imag.begin(), imag.end());
+  return test::ComplexInputFromValues<T>(real, imag);
 }
 
 template <typename T,

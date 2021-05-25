@@ -49,8 +49,7 @@ def save(dataset, path, compression=None, shard_func=None):
   >>> # Save a dataset
   >>> dataset = tf.data.Dataset.range(2)
   >>> tf.data.experimental.save(dataset, path)
-  >>> new_dataset = tf.data.experimental.load(path,
-  ...     tf.TensorSpec(shape=(), dtype=tf.int64))
+  >>> new_dataset = tf.data.experimental.load(path)
   >>> for elem in new_dataset:
   ...   print(elem)
   tf.Tensor(0, shape=(), dtype=int64)
@@ -108,7 +107,7 @@ def save(dataset, path, compression=None, shard_func=None):
   shard_func.add_to_graph(ops.get_default_graph())
 
   # pylint: disable=protected-access
-  dataset = dataset._apply_options()
+  dataset = dataset._apply_debug_options()
   gen_experimental_dataset_ops.save_dataset(
       dataset._variant_tensor,
       path=path,

@@ -29,7 +29,9 @@ extern "C" {
 // library.
 #ifdef SWIG
 #define TFL_CAPI_EXPORT
-#else
+#elif defined(TFL_STATIC_LIBRARY_BUILD)
+#define TFL_CAPI_EXPORT
+#else  // not definded TFL_STATIC_LIBRARY_BUILD
 #if defined(_WIN32)
 #ifdef TFL_COMPILE_LIBRARY
 #define TFL_CAPI_EXPORT __declspec(dllexport)
@@ -75,6 +77,7 @@ typedef enum {
   kTfLiteUInt64 = 13,
   kTfLiteResource = 14,
   kTfLiteVariant = 15,
+  kTfLiteUInt32 = 16,
 } TfLiteType;
 
 // Legacy. Will be deprecated in favor of TfLiteAffineQuantization.

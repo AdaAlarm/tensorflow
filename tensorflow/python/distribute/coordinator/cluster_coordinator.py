@@ -32,7 +32,6 @@ import time
 import weakref
 from six.moves import queue
 
-from tensorflow.python.data.ops import iterator_ops
 from tensorflow.python.distribute import input_lib
 from tensorflow.python.distribute import parameter_server_strategy_v2
 from tensorflow.python.distribute.coordinator import metric_utils
@@ -278,7 +277,7 @@ def _maybe_get_remote_value(val):
 
 
 def _maybe_as_type_spec(val):
-  if isinstance(val, RemoteValue):
+  if isinstance(val, (RemoteValue, PerWorkerValues)):
     if val._type_spec is None:  # pylint: disable=protected-access
       raise ValueError("Output of a scheduled function that is not "
                        "tf.function cannot be the input of another function.")
@@ -622,20 +621,30 @@ class WorkerPreemptionHandler(object):
     self._cluster_update_lock = threading.Lock()
     self._cluster_due_for_update_or_finish = threading.Event()
     self._worker_up_cond = threading.Condition(self._cluster_update_lock)
+    self._error_from_recovery = None
     self._should_preemption_thread_run = True
-    threading.Thread(target=self._preemption_handler,
-                     name="WorkerPreemptionHandler",
-                     daemon=True).start()
+    self._preemption_handler_thread = threading.Thread(
+        target=self._preemption_handler,
+        name="WorkerPreemptionHandler",
+        daemon=True)
+    self._preemption_handler_thread.start()
 
   def stop(self):
     """Ensure the worker preemption thread is closed."""
     self._should_preemption_thread_run = False
     with self._cluster_update_lock:
       self._cluster_due_for_update_or_finish.set()
+    # TODO(yuefengz): The preemption handler thread shouldn't be terminated
+    # asynchronously since it touches eager context which is a process-wide
+    # singleton. The problem is in OSS unit tests will time out.
 
   def _validate_preemption_failure(self, e):
     """Validates that the given exception represents worker preemption."""
-    if _is_worker_failure(e):
+
+    # Only categorize the failure as a worker preemption if the cancellation
+    # manager did not attempt to cancel the blocking operations.
+    if _is_worker_failure(e) and (
+        not self._cluster._closure_queue._cancellation_mgr.is_cancelled):  # pylint: disable=protected-access
       return
     raise e
 
@@ -656,6 +665,7 @@ class WorkerPreemptionHandler(object):
     Yields:
       None.
     """
+    assert self._should_preemption_thread_run
     try:
       yield
     except errors.OpError as e:
@@ -667,13 +677,21 @@ class WorkerPreemptionHandler(object):
         return
 
       self._validate_preemption_failure(e)
-      logging.error("Worker %s failed with error: %s", worker_device_name, e)
+      logging.error("Worker %s failed with %r:%s", worker_device_name, e, e)
       if on_failure_fn:
         on_failure_fn()
 
       with self._cluster_update_lock:
         self._cluster_due_for_update_or_finish.set()
         self._worker_up_cond.wait(_WORKER_MAXIMUM_RECOVERY_SEC)
+        if self._error_from_recovery:
+          # TODO(yuefengz): there is only one worker that will get this error.
+          # Ideally we shuold let all workers notified by `_worker_up_cond` get
+          # this error.
+          try:
+            raise self._error_from_recovery
+          finally:
+            self._error_from_recovery = None
         logging.info("Worker %s has been recovered.", worker_device_name)
 
       if on_recovery_fn:
@@ -689,9 +707,11 @@ class WorkerPreemptionHandler(object):
     it waits until all workers are back and updates the cluster about the
     restarted workers.
     """
+    assert self._should_preemption_thread_run
     while True:
       self._cluster_due_for_update_or_finish.wait()
       if not self._should_preemption_thread_run:
+        logging.info("Stopping the failure handing thread.")
         break
 
       with self._cluster_update_lock:
@@ -704,9 +724,20 @@ class WorkerPreemptionHandler(object):
           # all workers that they are recovered from failure.
           logging.info("Cluster successfully recovered.")
           self._worker_up_cond.notify_all()
-          self._cluster_due_for_update_or_finish.clear()
+          # The check for _should_preemption_thread_run is necessary since the
+          # `stop` may have already set _cluster_due_for_update_or_finish.
+          if self._should_preemption_thread_run:
+            self._cluster_due_for_update_or_finish.clear()
         except Exception as e:  # pylint: disable=broad-except
-          self._validate_preemption_failure(e)
+          try:
+            self._validate_preemption_failure(e)
+          except Exception as ps_e:  # pylint: disable=broad-except
+            # In this case, a parameter server fails. So we raise this error to
+            # the caller of `wait_on_failure`.
+            self._error_from_recovery = ps_e
+            self._worker_up_cond.notify_all()
+            if self._should_preemption_thread_run:
+              self._cluster_due_for_update_or_finish.clear()
           # NOTE: Since the first RPC (GetStatus) of update_server_def is
           # currently blocking by default, error should only happen if:
           # (1) More workers failed while waiting for the previous workers to
@@ -797,13 +828,20 @@ class Worker(object):
     time.sleep(delay_secs)
 
   def _process_queue(self):
-    """Function running in a thread to process closure queues."""
+    """Function running in a worker thread to process closure queues."""
     self._maybe_delay()
     while self._should_worker_thread_run:
       closure = self._cluster._closure_queue.get()  # pylint: disable=protected-access
       if not self._should_worker_thread_run or closure is None:
         return
       self._process_closure(closure)
+      # To properly stop the worker and preemption threads, it is important that
+      # `ClusterCoordinator` object is not held onto so its `__del__` can be
+      # called. By removing the reference to the `closure` that has already been
+      # processed, we ensure that the `closure` object is released, while
+      # getting the next `closure` at above `self._cluster._closure_queue.get()`
+      # call.
+      del closure
 
   def _create_resource(self, function, args=None, kwargs=None):
     """Synchronously creates a per-worker resource represented by a `RemoteValue`.
@@ -1201,6 +1239,9 @@ class ClusterCoordinator(object):
     assert remote_value.fetch() == 3
     ```
 
+    NOTE: A known limitation is `tf.data.Options` is ignored in dataset created
+    by `create_per_worker_dataset`.
+
     Args:
       dataset_fn: The dataset function that returns a dataset. This is to be
         executed on the workers.
@@ -1211,9 +1252,9 @@ class ClusterCoordinator(object):
       a `tf.distribute.experimental.coordinator.PerWorkerValues` of the
       iterators (that are on the workers).
     """
-    input_workers = input_lib.InputWorkers([
-        (w.device_name, [w.device_name]) for w in self._cluster.workers
-    ])
+    input_workers = input_lib.InputWorkers(
+        [(w.device_name, [w.device_name]) for w in self._cluster.workers],
+        False)
 
     return _PerWorkerDistributedDataset(dataset_fn, input_workers, self)
 
@@ -1345,16 +1386,23 @@ class _PerWorkerDistributedDataset(object):
     # Setting type_spec of each RemoteValue so that functions taking these
     # RemoteValues as inputs can be traced.
     for iterator_remote_value in per_worker_iterator._values:
-      iterator_remote_value._type_spec = (  # pylint: disable=protected-access
-          iterator_ops.IteratorSpec(
-              self._dataset_fn.structured_outputs.element_spec))
+      iterator_remote_value._type_spec = (
+          input_lib.get_iterator_spec_from_dataset(
+              self._coordinator.strategy, self._dataset_fn.structured_outputs))
+
     return _PerWorkerDistributedIterator(per_worker_iterator._values)
 
   @property
   def element_spec(self):
-    """The type specification of an element of this dataset."""
-    raise NotImplementedError("Passing `AsyncDistributedDataset` to a "
-                              "tf.function is not supported.")
+    """The type specification of an element of this dataset.
+
+    This property is subject to change without notice.
+    """
+    if not isinstance(self._dataset_fn, tf_function.ConcreteFunction):
+      raise NotImplementedError(
+          "`element_spec` is not supported when the `dataset_fn` is not "
+          "a `ConcreteFunction`.")
+    return self._dataset_fn.structured_outputs.element_spec
 
 
 class _PerWorkerDistributedIterator(PerWorkerValues):
@@ -1412,5 +1460,12 @@ def _is_worker_failure(error):
     if ("is neither a type of a primitive operation nor a name of a function "
         "registered" in str(error)):
       return True
+
+  # NOTE(b/179061495): During worker preemptions, if multiple functions are
+  # running concurrently (especially with subfunctions spanning chief/PS),
+  # CancelledError can be returned due to chief/PS cancelling outstanding RPCs
+  # to the failing workers.
+  if isinstance(error, errors.CancelledError):
+    return True
 
   return False

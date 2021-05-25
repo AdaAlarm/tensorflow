@@ -423,7 +423,7 @@ tensorflow::Status UpdateContextWithServerDef(
   std::unique_ptr<tensorflow::ServerInterface> new_server;
   tensorflow::GrpcServer* grpc_server;
   if (reset_context) {
-    const tensorflow::DeviceMgr* device_mgr =
+    tensorflow::DeviceMgr* device_mgr =
         AreLocalDevicesCompatible(context, server_def)
             ? context->local_device_mgr()
             : nullptr;
@@ -491,9 +491,9 @@ tensorflow::Status UpdateContextWithServerDef(
         &new_remote_device_mgr));
     remote_device_mgr = new_remote_device_mgr.get();
   } else {
-    context->ClearCachesAndDefaultExecutor();
-    // TODO(b/143914772): Potential memory leak if rendezvous has pending
+    // NOTE(b/143914772): Potential memory leak if rendezvous has pending
     // tensors for removed / replaced workers.
+    context->ClearCachesAndDefaultExecutor();
 
     remote_device_mgr = context->GetOwnedRemoteDeviceMgr();
     if (remote_device_mgr == nullptr) {
@@ -746,9 +746,10 @@ Status EagerContextDistributedManager::CheckRemoteAlive(
 
   if (remote_status.ok()) {
     *is_alive = true;
+  } else {
+    LOG(INFO) << "Remote worker " << remote_task_name
+              << " is not alive: " << remote_status.error_message();
   }
-  LOG(INFO) << "Remote worker " << remote_task_name
-            << " is not alive: " << remote_status.error_message();
   return Status::OK();
 }
 #endif  // !IS_MOBILE_PLATFORM

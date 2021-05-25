@@ -27,6 +27,7 @@ limitations under the License.
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Threading.h"
 #include "mlir/Dialect/Quant/FakeQuantSupport.h"  // from @llvm-project
@@ -67,8 +68,6 @@ namespace TFL {
 //===----------------------------------------------------------------------===//
 // The actual LegalizeTF Pass.
 namespace {
-
-using xla::StatusOr;
 
 constexpr char kUnidirectionalSequenceLstm[] = "tf.UnidirectionalSequenceLstm";
 constexpr char kUnidirectionalSequenceRnn[] = "tf.UnidirectionalSequenceRnn";
@@ -728,7 +727,7 @@ void addPatterns(MLIRContext* context, OwningRewritePatternList& patterns) {
   TF::PopulateLoweringTFPatterns(context, &patterns);
 
   // Add the generated patterns to the list.
-  populateWithGenerated(context, patterns);
+  populateWithGenerated(patterns);
   patterns
       .insert<ConvertTFConcatV2Op, ConvertTFMatMulOp, ConvertTFMatrixDiagV2Op,
               ConvertTFMatrixDiagV3Op, ConvertTFPackOp, ConvertTFSplitOp,
@@ -741,7 +740,7 @@ void addPatterns(MLIRContext* context, OwningRewritePatternList& patterns) {
 }
 
 void applyPatterns(FuncOp func, ConversionTarget& target,
-                   FrozenRewritePatternList& frozenPatterns) {
+                   FrozenRewritePatternSet& frozenPatterns) {
   // Keep trying to convert.
   // TODO(karimnosseir): This is similar to what apply greedy patterns does.
   // Look if there is a function that tries until it converge.
@@ -790,17 +789,17 @@ void LegalizeTF::runOnFunction() {
         return success(current_thread_id == llvm::get_threadid());
       });
 
-  OwningRewritePatternList stage1Patterns;
+  OwningRewritePatternList stage1Patterns(&getContext());
 
   addPatterns(context, stage1Patterns);
 
-  FrozenRewritePatternList stage1FrozenPatterns(std::move(stage1Patterns));
+  FrozenRewritePatternSet stage1FrozenPatterns(std::move(stage1Patterns));
   applyPatterns(func, target, stage1FrozenPatterns);
 
   // Explict BroadcastTo addition for left-over broadcast-able ops.
   // The following pattern matchings should be done after the other legalization
   // rules in order not to add unnecessary BroadcastTo ops.
-  OwningRewritePatternList stage2Patterns;
+  OwningRewritePatternList stage2Patterns(&getContext());
 
   addPatterns(context, stage2Patterns);
 
@@ -824,7 +823,7 @@ void LegalizeTF::runOnFunction() {
                         ApplyExplicitBroadcasting<TF::SquaredDifferenceOp>,
                         ApplyExplicitBroadcasting<TF::SelectV2Op>>(context);
 
-  FrozenRewritePatternList stage2FrozenPatterns(std::move(stage2Patterns));
+  FrozenRewritePatternSet stage2FrozenPatterns(std::move(stage2Patterns));
   applyPatterns(func, target, stage2FrozenPatterns);
 }
 

@@ -9,8 +9,9 @@ package(
     default_visibility = [
         "//tensorflow/python/feature_column:__pkg__",
         "//tensorflow/python/keras:__subpackages__",
+        "//tensorflow/tools/pip_package:__pkg__",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 filegroup(
@@ -40,7 +41,6 @@ py_library(
         ":control_flow_util",
         ":engine_utils",
         ":generic_utils",
-        ":kpl_test_utils",
         ":layer_utils",
         ":multi_gpu_utils",
         ":np_utils",
@@ -59,7 +59,10 @@ py_library(
     name = "kpl_test_utils",
     srcs = ["kpl_test_utils.py"],
     srcs_version = "PY3",
-    deps = [],
+    deps = [
+        "//tensorflow/python/keras",
+        "//tensorflow/python/keras/layers/preprocessing:string_lookup",
+    ],
 )
 
 py_library(
@@ -91,9 +94,6 @@ py_library(
     name = "io_utils",
     srcs = ["io_utils.py"],
     srcs_version = "PY3",
-    deps = [
-        "@six_archive//:six",
-    ],
 )
 
 py_library(
@@ -110,8 +110,8 @@ py_library(
         "//tensorflow/python:tensor_util",
         "//tensorflow/python:util",
         "//tensorflow/python:variables",
+        "//tensorflow/python/distribute/coordinator:cluster_coordinator",
         "//tensorflow/python/eager:context",
-        "@six_archive//:six",
     ],
 )
 
@@ -262,9 +262,9 @@ py_library(
         "dataset_creator.py",
     ],
     srcs_version = "PY3",
-    visibility = ["//tensorflow/tools/pip_package:__pkg__"],
     deps = [
         "//tensorflow/python:util",
+        "//tensorflow/python/util:tf_export",
     ],
 )
 
@@ -275,6 +275,8 @@ tf_py_test(
     deps = [
         ":dataset_creator",
         "//tensorflow/python/distribute:multi_worker_test_base",
+        "//tensorflow/python/keras:combinations",
+        "//tensorflow/python/keras/distribute:multi_worker_testing_utils",
         "//tensorflow/python/keras/engine",
         "//tensorflow/python/keras/layers:core",
     ],

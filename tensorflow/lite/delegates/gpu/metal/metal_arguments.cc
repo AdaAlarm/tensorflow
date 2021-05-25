@@ -180,7 +180,7 @@ absl::Status MetalArguments::Init(
     const std::map<std::string, std::string>& linkables, MetalDevice* device,
     Arguments* args, std::string* code) {
   RETURN_IF_ERROR(AllocateObjects(*args, device->device()));
-  RETURN_IF_ERROR(AddObjectArgs(args));
+  RETURN_IF_ERROR(AddObjectArgs(device->GetInfo(), args));
   RETURN_IF_ERROR(
       ResolveSelectorsPass(device->GetInfo(), *args, linkables, code));
   object_refs_ = std::move(args->object_refs_);
@@ -466,12 +466,13 @@ absl::Status MetalArguments::AllocateObjects(const Arguments& args,
   return absl::OkStatus();
 }
 
-absl::Status MetalArguments::AddObjectArgs(Arguments* args) {
+absl::Status MetalArguments::AddObjectArgs(const GpuInfo& gpu_info,
+                                           Arguments* args) {
   for (auto& t : args->objects_) {
-    AddGPUResources(t.first, t.second->GetGPUResources(), args);
+    AddGPUResources(t.first, t.second->GetGPUResources(gpu_info), args);
   }
   for (auto& t : args->object_refs_) {
-    AddGPUResources(t.first, t.second->GetGPUResources(), args);
+    AddGPUResources(t.first, t.second->GetGPUResources(gpu_info), args);
   }
   return absl::OkStatus();
 }
@@ -491,6 +492,9 @@ std::string MetalArguments::GetListOfArgs(int buffer_offset,
   for (auto& t : images2d_) {
     std::string access = AccessToMetalTextureAccess(t.second.desc.access_type);
     std::string data_type = ToMetalDataType(t.second.desc.data_type);
+    if (t.second.desc.normalized) {
+      data_type = ToMetalDataType(t.second.desc.normalized_type);
+    }
     AppendArgument(absl::StrCat("texture2d<", data_type, ", ", access, "> ",
                                 t.first, "[[texture(", textures_offset, ")]]"),
                    &result);
@@ -730,7 +734,7 @@ absl::Status MetalArguments::ResolveSelector(
     return absl::NotFoundError(
         absl::StrCat("No object with name - ", object_name));
   }
-  auto names = desc_ptr->GetGPUResources().GetNames();
+  auto names = desc_ptr->GetGPUResources(gpu_info).GetNames();
   const auto* tensor_desc = dynamic_cast<const TensorDescriptor*>(desc_ptr);
   if (tensor_desc && (selector == "Write" || selector == "Linking")) {
     auto it = linkables.find(object_name);

@@ -149,6 +149,7 @@ def TF_DatasetSeedGeneratorResource : TF_ResourceBase<"DatasetSeedGenerator">;
 def TF_DatasetMemoryCacheResource : TF_ResourceBase<"DatasetMemoryCache">;
 def TF_DatasetIteratorResource : TF_ResourceBase<"DatasetIterator">;
 def TF_TPUEmbeddingResource : TF_ResourceBase<"TPUEmbedding">;
+def TF_GeneratorOpResource : TF_ResourceBase<"GeneratorOp">;
 
 def TF_VariableRead : MemRead<TF_VariableResource>;
 def TF_StackRead : MemRead<TF_StackResource>;
@@ -184,6 +185,8 @@ def TF_DatasetMemoryCacheFree : MemFree<TF_DatasetMemoryCacheResource>;
 def TF_DatasetIteratorFree : MemFree<TF_DatasetIteratorResource>;
 
 def TF_TPUEmbeddingSideEffect : MemoryEffects<[MemWrite<TF_TPUEmbeddingResource>]>;
+
+def TF_GeneratorOpSideEffect : MemoryEffects<[MemWrite<TF_GeneratorOpResource>]>;
 
 //===----------------------------------------------------------------------===//
 // TensorFlow op definitions
@@ -579,8 +582,8 @@ def TF_IntTypeAttr : TypeAttrBase<"IntegerType", "integer type"> {
 // Mixin class defining a builder for binary ops supporting broadcast
 // behavior. The result type has the same element type as both operands.
 class WithBroadcastableBinOpBuilder {
-  list<OpBuilderDAG> builders = [
-    OpBuilderDAG<(ins "Value":$x, "Value":$y),
+  list<OpBuilder> builders = [
+    OpBuilder<(ins "Value":$x, "Value":$y),
     [{
   auto resultType =
       OpTrait::util::getBroadcastedType(x.getType(), y.getType());
@@ -593,8 +596,8 @@ class WithBroadcastableBinOpBuilder {
 // Mixin class defining a builder for comparison ops supporting broadcast
 // behavior. The result type has bool element type.
 class WithBroadcastableCmpOpBuilder {
-  list<OpBuilderDAG> builders = [
-    OpBuilderDAG<(ins "Value":$x, "Value":$y),
+  list<OpBuilder> builders = [
+    OpBuilder<(ins "Value":$x, "Value":$y),
     [{
   Type resultType;
   if (x.getType().isa<UnrankedTensorType>() ||

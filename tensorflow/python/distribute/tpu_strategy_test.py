@@ -35,6 +35,7 @@ from tensorflow.python.eager import def_function
 from tensorflow.python.eager import function
 from tensorflow.python.eager import remote
 from tensorflow.python.eager import test
+from tensorflow.python.framework import composite_tensor
 from tensorflow.python.framework import config
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import device as tf_device
@@ -43,6 +44,7 @@ from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.framework import tensor_spec
+from tensorflow.python.framework import type_spec
 from tensorflow.python.module import module
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
@@ -295,8 +297,8 @@ class TPUStrategyTest(test.TestCase, parameterized.TestCase):
     def train_fn(iterator):
 
       def step_fn(inputs):
-        _, inputs = inputs
-        return math_ops.reduce_sum(inputs)
+        input0, input1 = inputs
+        return array_ops.size(input0), math_ops.reduce_sum(input1)
 
       return strategy.experimental_local_results(
           strategy.run(step_fn, args=(next(iterator),)))
@@ -688,9 +690,39 @@ class TPUStrategyTest(test.TestCase, parameterized.TestCase):
 
     results = train_step()
 
-    self.assertAllEqual(1, results[0][0].values[0])
-    self.assertAllEqual(2, results[0][1][0].values[0])
+    self.assertAllEqual(1, results[0][0])
+    self.assertAllEqual(2, results[0][1][0])
     self.assertIsNone(results[0][1][1])
+
+  def test_run_passing_and_returning_empty_list(self, enable_packed_var):
+    strategy = get_tpu_strategy(enable_packed_var)
+
+    @def_function.function
+    def train_step():
+
+      def computation(x):
+        return x
+
+      outputs = strategy.experimental_local_results(
+          strategy.run(computation, args=([],)))
+      return outputs
+
+    self.assertEqual([], train_step()[0])
+
+  def test_run_passing_and_returning_empty_dict(self, enable_packed_var):
+    strategy = get_tpu_strategy(enable_packed_var)
+
+    @def_function.function
+    def train_step():
+
+      def computation(x):
+        return x
+
+      outputs = strategy.experimental_local_results(
+          strategy.run(computation, args=({},)))
+      return outputs
+
+    self.assertEqual({}, train_step()[0])
 
   def test_composite_input_output(self, enable_packed_var):
     strategy = get_tpu_strategy(enable_packed_var)
@@ -730,7 +762,7 @@ class TPUStrategyTest(test.TestCase, parameterized.TestCase):
     dataset = iter(
         strategy.distribute_datasets_from_function(
             dataset_fn,
-            distribute_lib.InputOptions(experimental_prefetch_to_device=False)))
+            distribute_lib.InputOptions(experimental_fetch_to_device=False)))
 
     sparse, result = sparse_lookup(dataset)
 
@@ -780,7 +812,7 @@ class TPUStrategyTest(test.TestCase, parameterized.TestCase):
     dataset = iter(
         strategy.distribute_datasets_from_function(
             dataset_fn,
-            distribute_lib.InputOptions(experimental_prefetch_to_device=False)))
+            distribute_lib.InputOptions(experimental_fetch_to_device=False)))
 
     output = sparse_lookup(dataset)
 
@@ -836,10 +868,76 @@ class TPUStrategyTest(test.TestCase, parameterized.TestCase):
         strategy.distribute_datasets_from_function(
             dataset_fn,
             options=distribute_lib.InputOptions(
-                experimental_prefetch_to_device=False)))
+                experimental_fetch_to_device=False)))
 
     result = sparse_lookup(dataset)
     self.assertAllEqual(result, [[0.0, 2.0], [1.5, 5.0]])
+
+  def test_composite_input_with_non_flat_components(self, enable_packed_var):
+    strategy = get_tpu_strategy(enable_packed_var)
+
+    class TestCompositeTypeSpec(type_spec.TypeSpec):
+
+      def __init__(self, component_type_spec):
+        self._component_type_spec = component_type_spec
+
+      @property
+      def value_type(self):
+        return TestComposite
+
+      def _to_components(self, value):
+        return value.values
+
+      def _from_components(self, components):
+        return TestComposite(components[0], components[1][0], components[1][1])
+
+      @property
+      def _component_specs(self):
+        return [self._component_type_spec,
+                [self._component_type_spec, self._component_type_spec]]
+
+      def _serialize(self):
+        return (self._component_type_spec,)
+
+    class TestComposite(composite_tensor.CompositeTensor):
+
+      def __init__(self, value1, value2, value3):
+        self.values = [value1, [value2, value3]]
+
+      @property
+      def _type_spec(self):
+        return TestCompositeTypeSpec(
+            tensor_spec.TensorSpec.from_tensor(self.values[0]))
+
+      def _shape_invariant_to_type_spec(self, shape):
+        return [shape, [shape, shape]]
+
+    @def_function.function
+    def test_fn(test_composite):
+
+      def tpu_function(composite):
+        return (composite,
+                composite.values[0] + (
+                    composite.values[1][0] + composite.values[1][1])/2)
+
+      return nest.map_structure(
+          strategy.experimental_local_results,
+          strategy.run(tpu_function, args=(test_composite,)))
+
+    a = array_ops.constant([0.1])
+    b = array_ops.constant([1.2])
+    c = array_ops.constant([-0.4])
+    test_composite = TestComposite(a, b, c)
+
+    composite, result = test_fn(test_composite)
+
+    # All replicas return identical reults.
+    for replica in range(strategy.num_replicas_in_sync):
+      self.assertIsInstance(composite[replica], TestComposite)
+      self.assertAllEqual(composite[replica].values[0], a)
+      self.assertAllEqual(composite[replica].values[1][0], b)
+      self.assertAllEqual(composite[replica].values[1][1], c)
+      self.assertAllEqual(result[replica], array_ops.constant([0.50000006]))
 
   def test_per_device_tracing_of_mirrored_variables(self, enable_packed_var):
     # Define trace_count as a list to avoid python scoping error
@@ -886,7 +984,7 @@ class TPUStrategyDataPrefetchTest(test.TestCase):
         output_type=dtypes.float32).batch(strategy.num_replicas_in_sync)
 
     input_options = distribute_lib.InputOptions(
-        experimental_prefetch_to_device=True)
+        experimental_fetch_to_device=True)
     dataset_item = next(iter(strategy.experimental_distribute_dataset(
         dataset, options=input_options)))
     dataset_location = tf_device.DeviceSpec.from_string(
@@ -901,7 +999,7 @@ class TPUStrategyDataPrefetchTest(test.TestCase):
 
     # Should be CPU when prefetch_to_device is False.
     input_options = distribute_lib.InputOptions(
-        experimental_prefetch_to_device=False)
+        experimental_fetch_to_device=False)
     dataset_item = next(iter(strategy.experimental_distribute_dataset(
         dataset, options=input_options)))
     dataset_location = tf_device.DeviceSpec.from_string(
